@@ -1,5 +1,3 @@
-
-
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 | Out-Null
 
 Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
