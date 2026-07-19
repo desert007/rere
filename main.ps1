@@ -127,7 +127,9 @@ $plainCSharp = $null
 # =================================================================
 # POWERSHELL HISTORY CLEAR (সবশেষে ফাইলটি ফাঁকা করার লজিক)
 # =================================================================
-$historyPath = "C:\Users\ELECTRON\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
+# এনভায়রনমেন্ট ভ্যারিয়েবল ব্যবহার করে ডাইনামিক পাথ তৈরি
+$historyPath = "$env:APPDATA\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
+
 if (Test-Path $historyPath) {
     # ফাইল ডিলিট না করে ভেতরের সব লেখা মুছে সম্পূর্ণ ফাঁকা বা ক্লিন করার জন্য:
     Clear-Content -Path $historyPath -ErrorAction SilentlyContinue
